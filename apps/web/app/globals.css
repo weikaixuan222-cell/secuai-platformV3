@@ -1,0 +1,86 @@
+:root {
+  --bg-color: #0a0e17; /* Deep midnight blue/black */
+  --surface-color: rgba(20, 26, 38, 0.7); /* Translucent dark surface */
+  --surface-color-solid: #141a26;
+  --surface-highlight: rgba(30, 41, 59, 0.8);
+  
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  
+  --accent-primary: #10b981; /* Threat secure green */
+  --accent-primary-hover: #059669;
+  --accent-cyan: #06b6d4;  /* Tech blue/cyan */
+  
+  /* Severity Colors */
+  --severity-critical: #ef4444; /* Red */
+  --severity-high: #f97316; /* Orange */
+  --severity-medium: #eab308; /* Yellow */
+  --severity-low: #3b82f6; /* Blue */
+
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-highlight: rgba(16, 185, 129, 0.3);
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent-cyan);
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* Glassmorphism utilities */
+.glass-panel {
+  background: var(--surface-color);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.text-critical { color: var(--severity-critical); }
+.text-high { color: var(--severity-high); }
+.text-medium { color: var(--severity-medium); }
+.text-low { color: var(--severity-low); }
+
+/* Basic table styles that can be reused */
+.sec-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+.sec-table th {
+  padding: 12px 16px;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-color);
+}
+.sec-table td {
+  padding: 12px 16px;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.sec-table tbody tr:hover {
+  background: var(--surface-highlight);
+}
+

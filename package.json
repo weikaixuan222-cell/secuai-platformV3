@@ -1,0 +1,17 @@
+{
+  "name": "secuai-platform",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @secuai/web",
+    "dev:api": "npm run dev --workspace @secuai/api",
+    "build:web": "npm run build --workspace @secuai/web",
+    "build:api": "npm run build --workspace @secuai/api",
+    "test:api": "npm run test --workspace @secuai/api"
+  }
+}

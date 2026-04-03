@@ -1,0 +1,23 @@
+{
+  "name": "@secuai/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/preflight.ts && tsx watch --clear-screen=false src/server.ts",
+    "db:schema": "tsx src/db/apply-schema.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "test": "node --test tests/api.integration.test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.7.2",
+    "typescript": "^5.4.5"
+  }
+}
