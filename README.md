@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # SecuAI 智能防护平台
 
 SecuAI 是一个面向中小企业网站的安全防护平台。
@@ -148,3 +149,6 @@ npm run build --workspace @secuai/site-middleware
 npm run smoke:dashboard-policies --workspace @secuai/web
 npm run smoke:e2e-enforcement --workspace @secuai/site-middleware
 ```
+=======
+# secuai-platform
+>>>>>>> 55d8559522b617f36081fcf0bf3ab5696e30bafb
