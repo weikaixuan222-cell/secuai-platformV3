@@ -251,13 +251,19 @@ export interface CreateAiRiskResultInput {
 export interface AttackEventListFilters {
   tenantId: string;
   siteId?: string;
+  eventType?: string;
+  severity?: AttackSeverity;
   status?: AttackStatus;
+  startAt?: Date;
+  endAt?: Date;
   limit?: number;
 }
 
 export interface AiRiskResultListFilters {
   tenantId: string;
   siteId?: string;
+  requestLogId?: number;
+  attackEventId?: number;
   riskLevel?: RiskLevel;
   startAt?: Date;
   endAt?: Date;
@@ -279,6 +285,51 @@ export interface RequestLogListFilters {
 export interface PendingRequestLogsFilters {
   tenantIds: string[];
   limit?: number;
+}
+
+export interface SiteDashboardSummaryRow {
+  site_id: string;
+  site_name: string;
+  site_domain: string;
+  request_log_count: string;
+  attack_event_count: string;
+  ai_risk_result_count: string;
+  high_risk_result_count: string;
+  latest_request_log_at: Date | null;
+  latest_attack_event_at: Date | null;
+  latest_ai_risk_result_at: Date | null;
+}
+
+export interface RecentHighRiskEventRow {
+  attack_event_id: number;
+  site_id: string;
+  site_name: string;
+  site_domain: string;
+  request_log_id: number;
+  event_type: string;
+  severity: AttackSeverity;
+  status: AttackStatus;
+  summary: string;
+  detected_at: Date;
+  risk_score: string;
+  risk_level: RiskLevel;
+  client_ip: string | null;
+  path: string;
+  occurred_at: Date;
+}
+
+export interface SiteDashboardSummaryFilters {
+  tenantId: string;
+  siteId?: string;
+  startAt?: Date;
+  endAt?: Date;
+}
+
+export interface RecentHighRiskEventListFilters {
+  tenantId: string;
+  siteId?: string;
+  limit?: number;
+  offset?: number;
 }
 
 export interface HeuristicAnalyzerResult {

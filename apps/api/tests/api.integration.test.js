@@ -79,7 +79,7 @@ async function waitForHttpReady(url, label, timeoutMs = 15_000) {
         return;
       }
     } catch {
-      // wait for service startup
+      // 等待服务启动完成后再继续轮询。
     }
 
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
@@ -444,6 +444,12 @@ test("核心查询接口：GET /request-logs, GET /ai-risk-results, GET /attack-
       token: scenario.owner.token
     }
   );
+  const filteredAttackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&eventType=sql_injection&severity=high&startAt=2020-01-01T00:00:00.000Z&endAt=2099-01-01T00:00:00.000Z&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
   const aiRiskResultsResponse = await apiRequest(
     `/api/v1/ai-risk-results?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&riskLevel=high&limit=20`,
     {
@@ -462,11 +468,32 @@ test("核心查询接口：GET /request-logs, GET /ai-risk-results, GET /attack-
       token: scenario.outsider.token
     }
   );
+  const crossTenantAttackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&limit=20`,
+    {
+      token: scenario.outsider.token
+    }
+  );
+  const crossTenantAiRiskResultsResponse = await apiRequest(
+    `/api/v1/ai-risk-results?tenantId=${scenario.ownerTenant.id}&limit=20`,
+    {
+      token: scenario.outsider.token
+    }
+  );
 
   assert.equal(requestLogsResponse.status, 200);
   assert.equal(requestLogsResponse.json.data.items.length, 1);
   assert.equal(requestLogsResponse.json.data.items[0].clientIp, "203.0.113.20");
   assert.equal(requestLogsResponse.json.data.items[0].processedForDetection, true);
+
+  assert.equal(filteredAttackEventsResponse.status, 200);
+  assert.equal(filteredAttackEventsResponse.json.data.items.length, 1);
+  assert.equal(
+    filteredAttackEventsResponse.json.data.items[0].id,
+    scenario.sqlInjectionEventId
+  );
+  assert.equal(filteredAttackEventsResponse.json.data.items[0].eventType, "sql_injection");
+  assert.equal(filteredAttackEventsResponse.json.data.items[0].severity, "high");
 
   assert.equal(aiRiskResultsResponse.status, 200);
   assert.ok(aiRiskResultsResponse.json.data.items.length >= 1);
@@ -484,7 +511,164 @@ test("核心查询接口：GET /request-logs, GET /ai-risk-results, GET /attack-
     true
   );
 
+  const filteredAiRiskResultsByEventResponse = await apiRequest(
+    `/api/v1/ai-risk-results?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&attackEventId=${scenario.sqlInjectionEventId}&requestLogId=${attackEventDetailResponse.json.data.requestLog.id}&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(filteredAiRiskResultsByEventResponse.status, 200);
+  assert.equal(filteredAiRiskResultsByEventResponse.json.data.items.length, 1);
+  assert.equal(
+    filteredAiRiskResultsByEventResponse.json.data.items[0].attackEventId,
+    scenario.sqlInjectionEventId
+  );
+  assert.equal(
+    filteredAiRiskResultsByEventResponse.json.data.items[0].requestLogId,
+    attackEventDetailResponse.json.data.requestLog.id
+  );
+
   assert.equal(crossTenantDetailResponse.status, 403);
+  assert.equal(crossTenantAttackEventsResponse.status, 403);
+  assert.equal(crossTenantAiRiskResultsResponse.status, 403);
+});
+
+test("dashboard site summaries and recent high-risk events are tenant-scoped", async () => {
+  const siteSummariesResponse = await apiRequest(
+    `/api/v1/dashboard/site-summaries?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+  const historicalSiteSummariesResponse = await apiRequest(
+    `/api/v1/dashboard/site-summaries?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&startAt=2026-04-02T10:01:00.000Z&endAt=2026-04-02T10:01:00.000Z`,
+    {
+      token: scenario.owner.token
+    }
+  );
+  const invalidRangeSiteSummariesResponse = await apiRequest(
+    `/api/v1/dashboard/site-summaries?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&startAt=2026-04-03T00:00:00.000Z&endAt=2026-04-02T00:00:00.000Z`,
+    {
+      token: scenario.owner.token
+    }
+  );
+  const recentHighRiskEventsResponse = await apiRequest(
+    `/api/v1/dashboard/recent-high-risk-events?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&limit=10`,
+    {
+      token: scenario.owner.token
+    }
+  );
+  const recentHighRiskEventsFirstPageResponse = await apiRequest(
+    `/api/v1/dashboard/recent-high-risk-events?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&limit=1&offset=0`,
+    {
+      token: scenario.owner.token
+    }
+  );
+  const recentHighRiskEventsSecondPageResponse = await apiRequest(
+    `/api/v1/dashboard/recent-high-risk-events?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&limit=1&offset=1`,
+    {
+      token: scenario.owner.token
+    }
+  );
+  const invalidOffsetRecentHighRiskEventsResponse = await apiRequest(
+    `/api/v1/dashboard/recent-high-risk-events?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&offset=-1`,
+    {
+      token: scenario.owner.token
+    }
+  );
+  const crossTenantSiteSummariesResponse = await apiRequest(
+    `/api/v1/dashboard/site-summaries?tenantId=${scenario.ownerTenant.id}`,
+    {
+      token: scenario.outsider.token
+    }
+  );
+  const crossTenantRecentHighRiskEventsResponse = await apiRequest(
+    `/api/v1/dashboard/recent-high-risk-events?tenantId=${scenario.ownerTenant.id}&limit=10`,
+    {
+      token: scenario.outsider.token
+    }
+  );
+
+  assert.equal(siteSummariesResponse.status, 200);
+  assert.equal(siteSummariesResponse.json.data.items.length, 1);
+
+  const siteSummary = siteSummariesResponse.json.data.items[0];
+  assert.equal(siteSummary.siteId, scenario.site.id);
+  assert.equal(siteSummary.siteName, "Main Site");
+  assert.equal(siteSummary.siteDomain, scenario.site.domain);
+  assert.equal(siteSummary.requestLogCount, 7);
+  assert.equal(siteSummary.attackEventCount, scenario.attackEvents.length);
+  assert.equal(siteSummary.aiRiskResultCount, scenario.aiRiskResults.length);
+  assert.ok(siteSummary.highRiskResultCount >= 1);
+  assert.equal(siteSummary.latestRequestLogAt, "2026-04-02T10:01:00.000Z");
+  assert.ok(siteSummary.latestAttackEventAt);
+  assert.ok(siteSummary.latestAiRiskResultAt);
+
+  assert.equal(historicalSiteSummariesResponse.status, 200);
+  assert.equal(historicalSiteSummariesResponse.json.data.items.length, 1);
+
+  const historicalSiteSummary = historicalSiteSummariesResponse.json.data.items[0];
+  assert.equal(historicalSiteSummary.siteId, scenario.site.id);
+  assert.equal(historicalSiteSummary.requestLogCount, 1);
+  assert.equal(historicalSiteSummary.attackEventCount, 0);
+  assert.equal(historicalSiteSummary.aiRiskResultCount, 0);
+  assert.equal(historicalSiteSummary.highRiskResultCount, 0);
+  assert.equal(historicalSiteSummary.latestRequestLogAt, "2026-04-02T10:01:00.000Z");
+  assert.equal(historicalSiteSummary.latestAttackEventAt, null);
+  assert.equal(historicalSiteSummary.latestAiRiskResultAt, null);
+
+  assert.equal(invalidRangeSiteSummariesResponse.status, 400);
+  assert.equal(invalidRangeSiteSummariesResponse.json.error.code, "VALIDATION_ERROR");
+
+  assert.equal(recentHighRiskEventsResponse.status, 200);
+  assert.ok(recentHighRiskEventsResponse.json.data.items.length >= 1);
+  assert.deepEqual(recentHighRiskEventsResponse.json.data.pagination, {
+    limit: 10,
+    offset: 0
+  });
+  assert.equal(recentHighRiskEventsResponse.json.data.items[0].siteId, scenario.site.id);
+  assert.equal(recentHighRiskEventsResponse.json.data.items[0].eventType, "sql_injection");
+  assert.equal(
+    recentHighRiskEventsResponse.json.data.items[0].attackEventId,
+    scenario.sqlInjectionEventId
+  );
+  assert.ok(
+    ["high", "critical"].includes(
+      recentHighRiskEventsResponse.json.data.items[0].riskLevel
+    )
+  );
+
+  assert.equal(recentHighRiskEventsFirstPageResponse.status, 200);
+  assert.deepEqual(recentHighRiskEventsFirstPageResponse.json.data.pagination, {
+    limit: 1,
+    offset: 0
+  });
+  assert.ok(recentHighRiskEventsFirstPageResponse.json.data.items.length <= 1);
+  assert.equal(recentHighRiskEventsFirstPageResponse.json.data.items[0].siteId, scenario.site.id);
+
+  assert.equal(recentHighRiskEventsSecondPageResponse.status, 200);
+  assert.deepEqual(recentHighRiskEventsSecondPageResponse.json.data.pagination, {
+    limit: 1,
+    offset: 1
+  });
+  assert.ok(recentHighRiskEventsSecondPageResponse.json.data.items.length <= 1);
+
+  if (recentHighRiskEventsSecondPageResponse.json.data.items.length === 1) {
+    assert.notEqual(
+      recentHighRiskEventsSecondPageResponse.json.data.items[0].attackEventId,
+      recentHighRiskEventsFirstPageResponse.json.data.items[0].attackEventId
+    );
+  }
+
+  assert.equal(invalidOffsetRecentHighRiskEventsResponse.status, 400);
+  assert.equal(
+    invalidOffsetRecentHighRiskEventsResponse.json.error.code,
+    "VALIDATION_ERROR"
+  );
+
+  assert.equal(crossTenantSiteSummariesResponse.status, 403);
+  assert.equal(crossTenantRecentHighRiskEventsResponse.status, 403);
 });
 
 test("站点级防护基础设施：策略读写、IP 封禁增删查、跨租户禁止访问", async () => {
@@ -840,4 +1024,276 @@ test("站点中间件专用防护检查接口：返回 allow/monitor/block 且�
 
   assert.equal(requestLogsResponse.status, 200);
   assert.equal(requestLogsResponse.json.data.items.length, 0);
+});
+
+test("编码态 queryString 归一化：monitor 下可检出 SQLi，protect 下可拦截 XSS，正常查询不误报", async () => {
+  const suffix = Date.now().toString();
+  const siteData = await createSite(
+    scenario.owner.token,
+    scenario.ownerTenant.id,
+    "Encoded Query Site",
+    `encoded-query-${suffix}.example.com`
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, siteData.site.id, {
+    mode: "monitor",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: false,
+    highRiskScoreThreshold: 90
+  });
+
+  const benignDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T13:00:00.000Z",
+    method: "GET",
+    host: "encoded-query.example.com",
+    path: "/search",
+    queryString: "category=unionized+selection",
+    clientIp: "192.0.2.31",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(benignDecision.action, "allow");
+  assert.deepEqual(benignDecision.reasons, []);
+
+  const benignRequestLog = await submitRequestLog(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T13:00:01.000Z",
+    method: "GET",
+    host: "encoded-query.example.com",
+    path: "/search",
+    queryString: "category=unionized+selection",
+    statusCode: 200,
+    clientIp: "192.0.2.31",
+    userAgent: "Mozilla/5.0"
+  });
+
+  const encodedSqlInjectionResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: "2026-04-02T13:00:02.000Z",
+      method: "GET",
+      host: "encoded-query.example.com",
+      path: "/login",
+      queryString: "id=1+UnIoN+SeLeCt+password+FrOm+users",
+      statusCode: 200,
+      clientIp: "192.0.2.32",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(encodedSqlInjectionResponse.status, 201);
+  assert.equal(encodedSqlInjectionResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    encodedSqlInjectionResponse.json.data.protection.reasons.includes("blocked_sql_injection")
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, siteData.site.id, {
+    mode: "protect",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: false,
+    highRiskScoreThreshold: 90
+  });
+
+  const encodedXssDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T13:00:03.000Z",
+    method: "GET",
+    host: "encoded-query.example.com",
+    path: "/search",
+    queryString: "q=%3CSCRIPT%3Ealert%281%29%3C%2FSCRIPT%3E",
+    clientIp: "192.0.2.33",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(encodedXssDecision.mode, "protect");
+  assert.equal(encodedXssDecision.action, "block");
+  assert.ok(encodedXssDecision.reasons.includes("blocked_xss"));
+
+  const detectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(detectionResponse.status, 200);
+
+  const attackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsResponse.status, 200);
+
+  const sqlInjectionRequestLogId = String(
+    encodedSqlInjectionResponse.json.data.requestLog.id
+  );
+  const benignRequestLogId = String(benignRequestLog.id);
+
+  assert.ok(
+    attackEventsResponse.json.data.items.some(
+      (item) =>
+        item.eventType === "sql_injection" &&
+        String(item.requestLogId) === sqlInjectionRequestLogId
+    )
+  );
+  assert.ok(
+    !attackEventsResponse.json.data.items.some(
+      (item) => String(item.requestLogId) === benignRequestLogId
+    )
+  );
+});
+
+test("path/queryString normalization boundaries: malformed percent fallback, double-encoded path payload detection, and benign no false positive", async () => {
+  const suffix = Date.now().toString();
+  const siteData = await createSite(
+    scenario.owner.token,
+    scenario.ownerTenant.id,
+    "Path Normalization Site",
+    `path-normalization-${suffix}.example.com`
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, siteData.site.id, {
+    mode: "monitor",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: false,
+    highRiskScoreThreshold: 90
+  });
+
+  const malformedDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T14:00:00.000Z",
+    method: "GET",
+    host: "path-normalization.example.com",
+    path: "/files/%E0%A4%A",
+    queryString: "next=%",
+    clientIp: "192.0.2.41",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(malformedDecision.mode, "monitor");
+  assert.equal(malformedDecision.action, "allow");
+  assert.deepEqual(malformedDecision.reasons, []);
+
+  const benignRequestLog = await submitRequestLog(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T14:00:01.000Z",
+    method: "GET",
+    host: "path-normalization.example.com",
+    path: "/docs/unionized-selection",
+    queryString: "topic=javascript-guide",
+    statusCode: 200,
+    clientIp: "192.0.2.42",
+    userAgent: "Mozilla/5.0"
+  });
+
+  const encodedPathSqlInjectionResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: "2026-04-02T14:00:02.000Z",
+      method: "GET",
+      host: "path-normalization.example.com",
+      path: "/login/%2555nion%2520SeLeCt",
+      statusCode: 200,
+      clientIp: "192.0.2.43",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(encodedPathSqlInjectionResponse.status, 201);
+  assert.equal(encodedPathSqlInjectionResponse.json.data.protection.mode, "monitor");
+  assert.equal(encodedPathSqlInjectionResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    encodedPathSqlInjectionResponse.json.data.protection.reasons.includes(
+      "blocked_sql_injection"
+    )
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, siteData.site.id, {
+    mode: "protect",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: false,
+    highRiskScoreThreshold: 90
+  });
+
+  const encodedPathXssDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T14:00:03.000Z",
+    method: "GET",
+    host: "path-normalization.example.com",
+    path: "/search/%253Cscript%253Ealert%25281%2529%253C%252Fscript%253E",
+    clientIp: "192.0.2.44",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(encodedPathXssDecision.mode, "protect");
+  assert.equal(encodedPathXssDecision.action, "block");
+  assert.ok(encodedPathXssDecision.reasons.includes("blocked_xss"));
+
+  const detectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(detectionResponse.status, 200);
+
+  const attackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsResponse.status, 200);
+
+  const encodedPathSqlRequestLogId = String(
+    encodedPathSqlInjectionResponse.json.data.requestLog.id
+  );
+  const benignRequestLogId = String(benignRequestLog.id);
+
+  assert.ok(
+    attackEventsResponse.json.data.items.some(
+      (item) =>
+        item.eventType === "sql_injection" &&
+        String(item.requestLogId) === encodedPathSqlRequestLogId
+    )
+  );
+  assert.ok(
+    !attackEventsResponse.json.data.items.some(
+      (item) => String(item.requestLogId) === benignRequestLogId
+    )
+  );
 });

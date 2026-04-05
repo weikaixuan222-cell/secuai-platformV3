@@ -41,7 +41,7 @@ export async function createAttackEvent(
 
 export async function listAttackEvents(filters: AttackEventListFilters): Promise<AttackEventRow[]> {
   const safeLimit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
-  const values: Array<string | number> = [filters.tenantId];
+  const values: Array<string | number | Date> = [filters.tenantId];
   const conditions = ["tenant_id = $1"];
 
   if (filters.siteId) {
@@ -52,6 +52,26 @@ export async function listAttackEvents(filters: AttackEventListFilters): Promise
   if (filters.status) {
     values.push(filters.status);
     conditions.push(`status = $${values.length}`);
+  }
+
+  if (filters.eventType) {
+    values.push(filters.eventType);
+    conditions.push(`event_type = $${values.length}`);
+  }
+
+  if (filters.severity) {
+    values.push(filters.severity);
+    conditions.push(`severity = $${values.length}`);
+  }
+
+  if (filters.startAt) {
+    values.push(filters.startAt);
+    conditions.push(`detected_at >= $${values.length}`);
+  }
+
+  if (filters.endAt) {
+    values.push(filters.endAt);
+    conditions.push(`detected_at <= $${values.length}`);
   }
 
   values.push(safeLimit);

@@ -8,7 +8,7 @@
     "db:schema": "tsx src/db/apply-schema.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test": "node --test tests/api.integration.test.js"
+    "test": "node --test tests/requestThreatSignals.test.js tests/api.integration.test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

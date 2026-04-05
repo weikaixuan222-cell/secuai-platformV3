@@ -85,6 +85,16 @@ export async function listAiRiskResults(
     conditions.push(`risk_level = $${values.length}`);
   }
 
+  if (filters.requestLogId) {
+    values.push(filters.requestLogId);
+    conditions.push(`request_log_id = $${values.length}`);
+  }
+
+  if (filters.attackEventId) {
+    values.push(filters.attackEventId);
+    conditions.push(`attack_event_id = $${values.length}`);
+  }
+
   if (filters.startAt) {
     values.push(filters.startAt);
     conditions.push(`created_at >= $${values.length}`);

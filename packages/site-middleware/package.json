@@ -7,7 +7,10 @@
   "types": "dist/src/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "demo:native-node": "node dist/examples/native-node-server.js",
     "demo:e2e-monitor": "node dist/examples/monitor-e2e-demo.js",
+    "smoke:blocked-entity-lifecycle": "node dist/examples/blocked-entity-lifecycle-smoke.js",
+    "smoke:e2e-enforcement": "node dist/examples/enforcement-e2e-smoke.js",
     "typecheck": "tsc --pretty false --noEmit -p tsconfig.json",
     "test": "node --test tests/site-middleware.test.js"
   }

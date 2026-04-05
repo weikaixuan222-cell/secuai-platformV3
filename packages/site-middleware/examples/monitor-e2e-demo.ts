@@ -280,8 +280,8 @@ async function startDemoSiteServer(input: {
   });
 
   const siteServer = createServer(async (request: IncomingMessage, response: ServerResponse) => {
-    // Keep monitor-mode business traffic flowing and reuse middleware's async
-    // request-log reporting so the existing backend pipeline stays unchanged.
+    // monitor 模式下业务请求继续放行，同时复用中间件的异步日志上报能力，
+    // 确保后端仍沿用现有 request_logs -> detection -> attack_events -> ai_risk_results 主链路。
     const decision = await enforceNodeRequestProtection(request, response, protectionClient);
 
     if (decision.action === "block") {

@@ -3,8 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1 --port 3200",
+    "dev": "node scripts/start-next-dev.mjs",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
     "build": "next build",
+    "prestart": "node scripts/prepare-next-start.mjs",
+    "smoke:dashboard-events": "node scripts/dashboard-events-smoke.mjs",
+    "smoke:global-error": "node scripts/global-error-boundary-smoke.mjs",
+    "smoke:global-error:start": "node scripts/global-error-boundary-start-smoke.mjs",
+    "smoke:dashboard-policies": "node scripts/dashboard-policies-smoke.mjs",
     "start": "next start"
   },
   "dependencies": {

@@ -1,0 +1,77 @@
+.card {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.28);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 40px 24px;
+  text-align: center;
+}
+
+.iconWrap {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.loadingIcon {
+  background: rgba(59, 130, 246, 0.14);
+  color: var(--severity-low);
+}
+
+.emptyIcon {
+  background: rgba(6, 182, 212, 0.14);
+  color: var(--accent-cyan);
+}
+
+.errorIcon {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--severity-critical);
+}
+
+.title {
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.description {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.7;
+  margin: 0;
+  max-width: 420px;
+}
+
+.actionButton {
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.28);
+  border-radius: 10px;
+  color: var(--accent-cyan);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 10px 18px;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.actionButton:hover {
+  background: rgba(6, 182, 212, 0.18);
+  border-color: rgba(6, 182, 212, 0.4);
+  color: var(--text-primary);
+}
+
+.actionButton:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
+.actionButton:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}

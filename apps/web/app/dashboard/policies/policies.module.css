@@ -1,0 +1,488 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.header {
+  align-items: flex-start;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+}
+
+.eyebrow,
+.panelEyebrow {
+  color: var(--accent-cyan);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.title {
+  color: var(--text-primary);
+  font-size: 1.7rem;
+  font-weight: 700;
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.7;
+  max-width: 540px;
+}
+
+.feedbackBanner {
+  border-radius: 14px;
+  font-size: 0.84rem;
+  line-height: 1.6;
+  padding: 14px 16px;
+}
+
+.successBanner {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  color: var(--accent-primary);
+}
+
+.errorBanner {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: var(--accent-danger);
+}
+
+.filterPanel {
+  align-items: end;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
+  padding: 20px 24px;
+}
+
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fieldLabel {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fieldControl {
+  background: rgba(15, 23, 42, 0.35);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  min-height: 44px;
+  padding: 0 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.fieldControl:focus {
+  border-color: rgba(6, 182, 212, 0.45);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.08);
+  outline: none;
+}
+
+.fieldControl:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.filterSummary {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  padding-bottom: 12px;
+}
+
+.grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) minmax(400px, 0.9fr);
+}
+
+.policyPanel,
+.blockPanel {
+  padding: 24px;
+}
+
+.simulatorPanel {
+  padding: 24px;
+}
+
+.panelHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.panelTitle {
+  color: var(--text-primary);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.policyForm {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.modeFieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inlineLabel {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.modeButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.modeButton,
+.primaryButton,
+.deleteButton {
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 0 16px;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease,
+    opacity 0.2s ease;
+}
+
+.modeButton {
+  background: rgba(15, 23, 42, 0.3);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.modeButtonActive {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: rgba(6, 182, 212, 0.35);
+  color: var(--accent-cyan);
+}
+
+.modeButton:hover,
+.modeButton:focus-visible {
+  border-color: rgba(6, 182, 212, 0.35);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.modeBadge,
+.statusBadge,
+.entityType {
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.monitor,
+.badgeOff {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+
+.protect,
+.badgeOn {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  color: var(--accent-primary);
+}
+
+.policyList,
+.blockList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.policyItem,
+.blockItem {
+  background: rgba(15, 23, 42, 0.28);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.switchControl {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+}
+
+.switchInput {
+  cursor: pointer;
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+
+.thresholdGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.policyActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.primaryButton {
+  background: linear-gradient(135deg, var(--accent-primary), #0f766e);
+  border: 0;
+  color: #ffffff;
+}
+
+.primaryButton:hover,
+.primaryButton:focus-visible {
+  background: linear-gradient(135deg, #10b981, #0d9488);
+  outline: none;
+}
+
+.primaryButton:disabled,
+.modeButton:disabled,
+.deleteButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.itemTopRow {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.itemTitle {
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.itemDescription {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  margin-top: 8px;
+}
+
+.policyMetaRow,
+.blockMetaRow {
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.simulatorSummary {
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.simulatorHint {
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.7;
+  margin-bottom: 16px;
+}
+
+.simulatorForm {
+  background: rgba(15, 23, 42, 0.18);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.simulatorGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.simulatorResultCard {
+  background: rgba(15, 23, 42, 0.28);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.resultBadgeGroup {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.actionBadge {
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.actionAllow {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+
+.actionMonitor {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+
+.actionBlock {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.22);
+  color: var(--accent-danger);
+}
+
+.reasonList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin-top: 16px;
+  padding: 0;
+}
+
+.reasonItem {
+  align-items: center;
+  background: rgba(2, 6, 23, 0.42);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.reasonCode {
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 999px;
+  color: var(--accent-cyan);
+  font-family: 'Fira Code', monospace;
+  font-size: 0.72rem;
+  padding: 4px 8px;
+}
+
+.emptyReasonText {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  margin-top: 16px;
+}
+
+.entityType {
+  background: rgba(6, 182, 212, 0.08);
+  border: 1px solid rgba(6, 182, 212, 0.18);
+  color: var(--accent-cyan);
+}
+
+.blockCreateForm {
+  background: rgba(15, 23, 42, 0.18);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 1.4fr) minmax(180px, 1fr) auto;
+  margin-bottom: 20px;
+  padding: 16px;
+}
+
+.deleteButton {
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: var(--accent-danger);
+  margin-top: 14px;
+}
+
+.deleteButton:hover,
+.deleteButton:focus-visible {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.42);
+  outline: none;
+}
+
+.footerLink {
+  border: 1px solid rgba(6, 182, 212, 0.22);
+  border-radius: 999px;
+  color: var(--accent-cyan);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-top: 20px;
+  padding: 8px 14px;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.footerLink:hover,
+.footerLink:focus-visible {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: rgba(6, 182, 212, 0.42);
+  color: var(--text-primary);
+  outline: none;
+}
+
+@media (max-width: 1200px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .header {
+    flex-direction: column;
+  }
+
+  .filterPanel,
+  .thresholdGrid,
+  .blockCreateForm,
+  .simulatorGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

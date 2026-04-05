@@ -33,101 +33,85 @@ The first version only needs:
 6. All services must have clear environment variable examples
 7. Every module must include run instructions
 
+## Current Product Direction
+1. The project is currently in the phase from a log-ingestion security analysis platform toward a platform with minimal enforcement capability.
+2. Do not redesign it into a full reverse proxy or full traffic gateway at this stage.
+3. Keep the main chain stable:
+   - request_logs
+   - detection
+   - attack_events
+   - ai_risk_results
+4. Prioritize demonstrable MVP value over heavy infrastructure upgrades.
+
 ## Directory Plan
 - apps/web: admin dashboard
 - apps/api: main backend API
-- services/ai-analyzer: AI risk scoring service
+- services/ai-analyzer: AI risk analysis service
 - packages/shared: shared types and utilities
+- packages/site-middleware: site-side protection middleware
 
-## Coding Rules
-1. Explain the plan before major implementation
-2. Create minimal runnable code first
-3. Do not add unnecessary dependencies
-4. Add basic validation for all external input
-5. Add simple tests for core logic where possible
-6. After each task, summarize:
-   - what was implemented
-   - why it was designed that way
-   - what should be done next
+## Working Rules for Codex / Antigravity
+1. Read this file before making changes.
+2. Follow MVP-first scope control.
+3. Do not change API contracts unless explicitly required.
+4. Prefer small, verifiable iterations.
+5. When entering frontend work, prioritize:
+   - clear user-visible copy
+   - loading / error / empty / recover states
+   - accessibility semantics
+   - predictable navigation and URL state
+   - smoke coverage for critical flows
+6. Reuse existing helpers and components whenever possible.
+7. Do not invent backend fields that do not exist.
+8. Keep dev-only probes safe by default:
+   - enabled by default only in dev when intended
+   - off by default in production
+   - production enablement must require an explicit environment variable
 
-## Verification And Completion Rules
-After each task, Codex must run the smallest relevant verification for the changed module before considering the task complete.
+## Language and Documentation Rules
+1. All newly added or updated Markdown documentation must be written in Chinese.
+2. All newly added or updated code comments must be written in Chinese.
+3. When revising an existing file, convert touched English comments and touched Markdown content to Chinese unless there is a strong technical reason not to.
+4. User-facing explanatory text in docs, demo guides, runbooks, and README files should default to Chinese.
+5. Keep identifiers, API paths, protocol fields, database table names, error codes, and other technical contract values unchanged unless the task explicitly requires changing them.
+6. For bilingual or mixed-language files, prefer consolidating them into Chinese during active edits rather than leaving partial English behind.
 
-Rules:
-1. Do not stop at code generation only.
-2. Always verify the changed part when feasible.
-3. Prefer focused verification over full-project verification unless the task is integration-related.
-4. If verification cannot be executed because of environment limits, state the exact reason clearly.
-5. A completion summary must always include:
-   - implemented changes
-   - commands run for verification
-   - pass/fail result
-   - remaining unverified risks
+## Validation Rules
+1. Every meaningful change should include validation.
+2. Prefer:
+   - typecheck
+   - build
+   - targeted smoke
+3. If something cannot be fully smoke-tested yet, state the remaining risk clearly.
 
-Minimum checks by area:
-- Backend changes:
-  - typecheck
-  - build
-  - endpoint smoke test when routes changed
-- Frontend changes:
-  - typecheck
-  - build
-  - minimal page/flow smoke test when feasible
-- Database changes:
-  - schema or migration apply
-- Detection/security logic changes:
-  - run a sample detection flow and confirm expected event generation
-- AI analyzer changes:
-  - run the analyze endpoint with sample payloads and confirm expected scoring behavior
+## PROJECT_STATE.md Rules
+Whenever a task modifies PROJECT_STATE.md, update it in a concise way.
 
-Definition of done:
-A task is only done when both implementation and relevant verification are completed and reported.
+Requirements:
+1. Keep PROJECT_STATE.md short and scannable.
+2. Only keep durable, high-value project state.
+3. Do not keep long historical narration.
+4. Do not duplicate implementation details that are already obvious from code or README.
+5. Prefer compact sections and bullet points over long prose.
+6. Keep:
+   - current project stage
+   - confirmed architecture direction
+   - current web status
+   - latest validated capabilities
+   - current blockers / risks
+   - next recommended step
+7. Remove:
+   - stale intermediate notes
+   - repeated validation logs
+   - overly detailed file-by-file history
+8. After each successful task that changes PROJECT_STATE.md, rewrite it into the latest concise state instead of only appending more text.
+9. PROJECT_STATE.md content should be written in Chinese.
 
-## Refactoring And Bug Fix Rules
-When fixing bugs or technical debt:
-1. Fix root causes in the original implementation whenever possible.
-2. Do not add outer patch layers to hide flawed internal logic.
-3. Do not keep parallel long-term implementations for the same responsibility.
-4. Temporary compatibility code is only allowed when required for migration, and must include a clear cleanup path.
-5. Prefer replacing incorrect structures over wrapping them.
-6. Every bug fix task must include:
-   - root cause analysis
-   - files changed
-   - verification steps
-   - remaining risks
-
-## Security-Sensitive Rules
-For authentication, session handling, key storage, detection permissions, and event generation:
-1. Never keep insecure legacy logic once a secure replacement is implemented unless a migration step requires it.
-2. Secrets must not be stored in plaintext when hashing is feasible.
-3. Authorization checks must be enforced in the main flow, not documented as future work.
-4. Detection and scoring flows must fail safely and degrade gracefully.
-
-## Integration Rules
-For detection and AI scoring:
-1. request_logs must be processed first
-2. attack_events must be created before AI scoring
-3. AI scoring must never block attack_events creation
-4. AI failures must degrade safely
-5. Do not create a parallel detection pipeline
-
-## AI Scoring Contract
-For the current MVP:
-- model_name must be heuristic-analyzer
-- model_version must be v1
-- reasons must retain array semantics
-- explanation is human-readable text
-- raw_response or factors should preserve structured analyzer output
-
-Every completion report must include:
-1. commands run
-2. pass/fail result
-3. what remains unverified
-
-## Current Priorities
-1. Complete backend integration from detection to AI scoring
-2. Persist AI analysis results into ai_risk_results
-3. Verify the full backend flow:
-   request_logs -> attack_events -> ai_risk_results
-4. Add backend query APIs needed for later dashboard use
-5. Do not start frontend dashboard work until the backend flow is complete and verified
+## Delivery Rules
+After completing a task, report:
+1. Design approach
+2. What was changed
+3. Validation commands
+4. Validation results
+5. Whether AGENTS.md needs changes
+6. Whether PROJECT_STATE.md needs changes

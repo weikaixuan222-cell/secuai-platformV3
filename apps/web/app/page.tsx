@@ -1,24 +1,34 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
 import { getAuthToken } from '@/lib/api';
 
 export default function RootPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const token = getAuthToken();
-    if (token) {
-      router.push('/dashboard/events');
-    } else {
-      router.push('/login');
+    if (getAuthToken()) {
+      router.push('/dashboard');
+      return;
     }
+
+    router.push('/login');
   }, [router]);
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: 'var(--text-secondary)' }}>
-      SecuAI 初始化中...
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        alignItems: 'center',
+        color: 'var(--text-secondary)',
+        display: 'flex',
+        height: '100vh',
+        justifyContent: 'center'
+      }}
+    >
+      正在加载控制台入口...
     </div>
   );
 }

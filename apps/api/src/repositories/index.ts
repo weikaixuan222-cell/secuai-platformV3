@@ -5,6 +5,7 @@ export * from "./usersRepository.js";
 export * from "./aiRiskResultsRepository.js";
 export * from "./attackEventsRepository.js";
 export * from "./blockedEntitiesRepository.js";
+export * from "./dashboardRepository.js";
 export * from "./requestLogsRepository.js";
 export * from "./securityPoliciesRepository.js";
 export * from "./sitesRepository.js";

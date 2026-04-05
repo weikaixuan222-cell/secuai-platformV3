@@ -8,6 +8,7 @@ import { withTransaction } from "./db/client.js";
 import type {
   AiRiskResultListFilters,
   AttackEventListFilters,
+  AttackSeverity,
   AttackStatus,
   BlockedEntitySource,
   BlockedEntityType,
@@ -42,7 +43,9 @@ import {
   listAiRiskResults,
   listAttackEvents,
   listBlockedEntitiesBySiteId,
+  listRecentHighRiskEvents,
   listRequestLogs,
+  listSiteDashboardSummaries,
   listTenantMembershipsByUserId,
   touchUserSession,
   updateUserLastLoginAt,
@@ -116,7 +119,7 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
 
-    // Security: the MVP server hard-limits request body size to reduce abuse surface.
+    // 安全说明：MVP 服务端对请求体做硬上限限制，降低异常大包带来的滥用面。
     if (size > MAX_BODY_SIZE_BYTES) {
       throw new ApiError(413, "PAYLOAD_TOO_LARGE", "Request body exceeds the 1 MB limit.");
     }
@@ -294,7 +297,7 @@ function parseBlockedEntitySource(value: string): BlockedEntitySource {
 function parseIpEntityValue(value: string): string {
   const normalized = value.trim();
 
-  // Security: only syntactically valid IPs can enter the MVP block list to avoid ambiguous matching.
+  // 安全说明：只有语法合法的 IP 才能进入 MVP block list，避免后续匹配出现歧义。
   if (isIP(normalized) === 0) {
     throw new ApiError(400, "VALIDATION_ERROR", "entityValue must be a valid IPv4 or IPv6 address.");
   }
@@ -389,7 +392,7 @@ async function requireSiteAccess(auth: AuthContext, siteId: string): Promise<Sit
     throw new ApiError(404, "SITE_NOT_FOUND", "Site not found.");
   }
 
-  // Security: site-scoped policy/blocklist operations must stay inside the caller's tenant boundary.
+  // 安全说明：站点级策略和 blocklist 操作必须被限制在调用方所属租户边界内。
   assertTenantAccess(auth, site.tenant_id);
 
   return site;
@@ -413,7 +416,7 @@ async function requireActiveSiteByIngestionKey(
 
   const providedKeyHash = hashOpaqueToken(ingestionKey.trim());
 
-  // Security: site middleware and log ingestion both authenticate with hashed ingestion keys.
+  // 安全说明：站点中间件和日志写入入口都使用 ingestion key 的哈希值做认证比对。
   if (providedKeyHash !== site.ingestion_key_hash) {
     throw new ApiError(401, "INVALID_INGESTION_KEY", "Invalid site ingestion key.");
   }
@@ -984,10 +987,16 @@ async function handleListAttackEvents(
 
   const status = url.searchParams.get("status");
   const siteId = url.searchParams.get("siteId") ?? undefined;
+  const eventType = url.searchParams.get("eventType");
+  const severity = url.searchParams.get("severity");
+  const startAt = parseOptionalDateTime(url.searchParams.get("startAt"), "startAt");
+  const endAt = parseOptionalDateTime(url.searchParams.get("endAt"), "endAt");
   const limitParam = url.searchParams.get("limit");
   const filters: AttackEventListFilters = {
     tenantId,
-    siteId
+    siteId,
+    startAt,
+    endAt
   };
 
   if (status) {
@@ -996,6 +1005,18 @@ async function handleListAttackEvents(
     }
 
     filters.status = status as AttackStatus;
+  }
+
+  if (eventType) {
+    filters.eventType = parseAttackEventType(eventType);
+  }
+
+  if (severity) {
+    filters.severity = parseAttackSeverity(severity);
+  }
+
+  if (startAt && endAt && startAt > endAt) {
+    throw new ApiError(400, "VALIDATION_ERROR", "startAt must be earlier than or equal to endAt.");
   }
 
   if (limitParam) {
@@ -1045,6 +1066,32 @@ function parseRiskLevel(value: string): RiskLevel {
   return value as RiskLevel;
 }
 
+function parseAttackSeverity(value: string): AttackSeverity {
+  if (!["low", "medium", "high", "critical"].includes(value)) {
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      "severity must be one of: low, medium, high, critical."
+    );
+  }
+
+  return value as AttackSeverity;
+}
+
+function parseAttackEventType(value: string): string {
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (!/^[a-z][a-z0-9_]{1,63}$/.test(normalizedValue)) {
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      "eventType must be 2-64 chars and contain lowercase letters, digits, or underscores."
+    );
+  }
+
+  return normalizedValue;
+}
+
 async function handleListAiRiskResults(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1060,6 +1107,14 @@ async function handleListAiRiskResults(
   assertTenantAccess(auth, tenantId);
 
   const siteId = url.searchParams.get("siteId") ?? undefined;
+  const requestLogId = parseOptionalPositiveIntegerQueryParam(
+    url.searchParams.get("requestLogId"),
+    "requestLogId"
+  );
+  const attackEventId = parseOptionalPositiveIntegerQueryParam(
+    url.searchParams.get("attackEventId"),
+    "attackEventId"
+  );
   const riskLevel = url.searchParams.get("riskLevel");
   const startAt = parseOptionalDateTime(url.searchParams.get("startAt"), "startAt");
   const endAt = parseOptionalDateTime(url.searchParams.get("endAt"), "endAt");
@@ -1067,6 +1122,8 @@ async function handleListAiRiskResults(
   const filters: AiRiskResultListFilters = {
     tenantId,
     siteId,
+    requestLogId,
+    attackEventId,
     startAt,
     endAt
   };
@@ -1081,6 +1138,46 @@ async function handleListAiRiskResults(
 
   if (riskLevel) {
     filters.riskLevel = parseRiskLevel(riskLevel);
+  }
+
+  if (requestLogId) {
+    const requestLog = await findRequestLogById(requestLogId);
+
+    if (!requestLog || requestLog.tenant_id !== tenantId) {
+      throw new ApiError(
+        404,
+        "REQUEST_LOG_NOT_FOUND",
+        "Request log not found inside the tenant."
+      );
+    }
+
+    if (siteId && requestLog.site_id !== siteId) {
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "requestLogId does not belong to the selected siteId."
+      );
+    }
+  }
+
+  if (attackEventId) {
+    const attackEvent = await findAttackEventById(attackEventId);
+
+    if (!attackEvent || attackEvent.tenant_id !== tenantId) {
+      throw new ApiError(
+        404,
+        "ATTACK_EVENT_NOT_FOUND",
+        "Attack event not found inside the tenant."
+      );
+    }
+
+    if (siteId && attackEvent.site_id !== siteId) {
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "attackEventId does not belong to the selected siteId."
+      );
+    }
   }
 
   if (startAt && endAt && startAt > endAt) {
@@ -1118,6 +1215,138 @@ async function handleListAiRiskResults(
   });
 }
 
+async function assertOptionalTenantSiteAccess(tenantId: string, siteId?: string): Promise<void> {
+  if (!siteId) {
+    return;
+  }
+
+  const site = await findSiteById(siteId);
+
+  if (!site || site.tenant_id !== tenantId) {
+    throw new ApiError(404, "SITE_NOT_FOUND", "Site not found inside the tenant.");
+  }
+}
+
+async function handleListSiteDashboardSummaries(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL
+): Promise<void> {
+  const auth = await requireAuth(request);
+  const tenantId = url.searchParams.get("tenantId");
+
+  if (!tenantId) {
+    throw new ApiError(400, "VALIDATION_ERROR", "tenantId query parameter is required.");
+  }
+
+  assertTenantAccess(auth, tenantId);
+
+  const siteId = url.searchParams.get("siteId") ?? undefined;
+  const startAt = parseOptionalDateTime(url.searchParams.get("startAt"), "startAt");
+  const endAt = parseOptionalDateTime(url.searchParams.get("endAt"), "endAt");
+
+  if (startAt && endAt && startAt > endAt) {
+    throw new ApiError(400, "VALIDATION_ERROR", "startAt must be earlier than or equal to endAt.");
+  }
+
+  await assertOptionalTenantSiteAccess(tenantId, siteId);
+
+  const items = await listSiteDashboardSummaries({
+    tenantId,
+    siteId,
+    startAt,
+    endAt
+  });
+
+  sendSuccess(response, 200, {
+    items: items.map((item) => ({
+      siteId: item.site_id,
+      siteName: item.site_name,
+      siteDomain: item.site_domain,
+      requestLogCount: Number(item.request_log_count),
+      attackEventCount: Number(item.attack_event_count),
+      aiRiskResultCount: Number(item.ai_risk_result_count),
+      highRiskResultCount: Number(item.high_risk_result_count),
+      latestRequestLogAt: item.latest_request_log_at
+        ? item.latest_request_log_at.toISOString()
+        : null,
+      latestAttackEventAt: item.latest_attack_event_at
+        ? item.latest_attack_event_at.toISOString()
+        : null,
+      latestAiRiskResultAt: item.latest_ai_risk_result_at
+        ? item.latest_ai_risk_result_at.toISOString()
+        : null
+    }))
+  });
+}
+
+async function handleListRecentHighRiskEvents(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL
+): Promise<void> {
+  const auth = await requireAuth(request);
+  const tenantId = url.searchParams.get("tenantId");
+
+  if (!tenantId) {
+    throw new ApiError(400, "VALIDATION_ERROR", "tenantId query parameter is required.");
+  }
+
+  assertTenantAccess(auth, tenantId);
+
+  const siteId = url.searchParams.get("siteId") ?? undefined;
+  const limit = parseOptionalPositiveIntegerQueryParam(url.searchParams.get("limit"), "limit");
+  const offset = parseOptionalNonNegativeIntegerQueryParam(
+    url.searchParams.get("offset"),
+    "offset"
+  );
+
+  if (limit !== undefined && limit > 200) {
+    throw new ApiError(400, "VALIDATION_ERROR", "limit must be an integer between 1 and 200.");
+  }
+
+  if (offset !== undefined && offset > 10000) {
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      "offset must be an integer between 0 and 10000."
+    );
+  }
+
+  await assertOptionalTenantSiteAccess(tenantId, siteId);
+
+  const items = await listRecentHighRiskEvents({
+    tenantId,
+    siteId,
+    limit,
+    offset
+  });
+
+  sendSuccess(response, 200, {
+    pagination: {
+      limit: limit ?? 20,
+      offset: offset ?? 0
+    },
+    items: items.map((item) => ({
+      attackEventId: item.attack_event_id,
+      siteId: item.site_id,
+      siteName: item.site_name,
+      siteDomain: item.site_domain,
+      requestLogId: item.request_log_id,
+      eventType: item.event_type,
+      severity: item.severity,
+      status: item.status,
+      summary: item.summary,
+      detectedAt: item.detected_at.toISOString(),
+      riskScore: Number(item.risk_score),
+      riskLevel: item.risk_level,
+      clientIp: item.client_ip,
+      path: item.path,
+      occurredAt: item.occurred_at.toISOString()
+    }))
+  });
+}
+
 function parseOptionalBoolean(value: string | null, fieldName: string): boolean | undefined {
   if (value === null) {
     return undefined;
@@ -1139,6 +1368,34 @@ function parsePositiveIntegerPathParam(value: string, fieldName: string): number
 
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new ApiError(400, "VALIDATION_ERROR", `${fieldName} must be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+function parseOptionalPositiveIntegerQueryParam(
+  value: string | null,
+  fieldName: string
+): number | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  return parsePositiveIntegerPathParam(value, fieldName);
+}
+
+function parseOptionalNonNegativeIntegerQueryParam(
+  value: string | null,
+  fieldName: string
+): number | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new ApiError(400, "VALIDATION_ERROR", `${fieldName} must be a non-negative integer.`);
   }
 
   return parsed;
@@ -1463,6 +1720,19 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/api/v1/ai-risk-results") {
       await handleListAiRiskResults(request, response, url);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/v1/dashboard/site-summaries") {
+      await handleListSiteDashboardSummaries(request, response, url);
+      return;
+    }
+
+    if (
+      request.method === "GET" &&
+      url.pathname === "/api/v1/dashboard/recent-high-risk-events"
+    ) {
+      await handleListRecentHighRiskEvents(request, response, url);
       return;
     }
 

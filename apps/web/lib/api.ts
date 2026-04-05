@@ -43,6 +43,39 @@ export function clearAuthData() {
   }
 }
 
+type QueryValue = string | number | boolean | null | undefined;
+
+export function getRequiredTenantId(): string {
+  const tenantId = getTenantId();
+
+  if (!tenantId) {
+    throw new ApiError(
+      '租户上下文缺失，请重新登录。',
+      'TENANT_CONTEXT_MISSING'
+    );
+  }
+
+  return tenantId;
+}
+
+export function buildApiPath(
+  pathname: string,
+  query: object = {}
+): string {
+  const searchParams = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(query) as Array<[string, QueryValue]>) {
+    if (value === undefined || value === null || value === '') {
+      continue;
+    }
+
+    searchParams.set(key, String(value));
+  }
+
+  const queryString = searchParams.toString();
+  return queryString ? `${pathname}?${queryString}` : pathname;
+}
+
 export async function fetchApi<T>(
   endpoint: string,
   options: RequestInit = {}
@@ -62,14 +95,17 @@ export async function fetchApi<T>(
     headers,
   });
 
-  if (response.status === 401) {
+  const data = await response.json();
+
+  if (
+    response.status === 401 &&
+    (data as ApiErrorResponse)?.error?.code === 'UNAUTHORIZED'
+  ) {
     clearAuthData();
     if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
       window.location.href = '/login';
     }
   }
-
-  const data = await response.json();
 
   if (!response.ok || data.success === false) {
     const errData = data as ApiErrorResponse;

@@ -1,10 +1,10 @@
-import { Metadata } from 'next';
+import type { Metadata } from 'next';
 import LoginForm from './LoginForm';
 import styles from './login.module.css';
 
 export const metadata: Metadata = {
-  title: '登录 - SecuAI',
-  description: '登录 SecuAI 控制台',
+  title: '登录控制台 - SecuAI',
+  description: '登录 SecuAI 管理控制台，查看安全总览、攻击事件和站点防护策略。'
 };
 
 export default function LoginPage() {
@@ -13,7 +13,14 @@ export default function LoginPage() {
       <div className={`glass-panel ${styles.loginBox}`}>
         <div className={styles.header}>
           <div className={styles.logoBox}>
-            <svg width="32" height="32" viewBox="0 0 48 48" fill="none" className={styles.logo}>
+            <svg
+              width="32"
+              height="32"
+              viewBox="0 0 48 48"
+              fill="none"
+              className={styles.logo}
+              aria-hidden="true"
+            >
               <path
                 fillRule="evenodd"
                 clipRule="evenodd"
@@ -22,8 +29,10 @@ export default function LoginPage() {
               />
             </svg>
           </div>
-          <h1 className={styles.title}>SecuAI 控制台</h1>
-          <p className={styles.subtitle}>登录后访问你的安全管理平台</p>
+          <h1 className={styles.title}>登录 SecuAI 控制台</h1>
+          <p className={styles.subtitle}>
+            登录后可查看安全总览、攻击事件、站点策略和封禁名单，并继续处理当前租户下的风险告警。
+          </p>
         </div>
         <LoginForm />
       </div>

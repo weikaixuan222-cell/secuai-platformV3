@@ -11,3 +11,6 @@ __pycache__/
 .tmp-*.log
 .DS_Store
 Thumbs.db
+.codex/
+.codex-temp/
+build/
