@@ -1,16 +1,8 @@
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { spawnNpm, stopProcessTree } from './smoke-helpers.mjs';
 
 const WEB_BASE_URL = process.env.SECUAI_WEB_BASE_URL || 'http://127.0.0.1:3200';
 const disabledProbeRoute = `/error-boundary-smoke?trigger=1&probeId=disabled-${Date.now()}`;
-
-function spawnNpm(args, options) {
-  if (process.platform === 'win32') {
-    return spawn('cmd.exe', ['/d', '/s', '/c', 'npm', ...args], options);
-  }
-
-  return spawn('npm', args, options);
-}
 
 function launchStartServer(enableProbeRoute) {
   const previousProbeFlag = process.env.SECUAI_ENABLE_ERROR_BOUNDARY_SMOKE;
@@ -25,7 +17,8 @@ function launchStartServer(enableProbeRoute) {
     ['run', 'start', '--', '--hostname', '127.0.0.1', '--port', '3200'],
     {
       cwd: process.cwd(),
-      stdio: 'inherit'
+      stdio: 'inherit',
+      detached: process.platform !== 'win32'
     }
   );
 
@@ -37,29 +30,6 @@ function launchStartServer(enableProbeRoute) {
 
   return serverProcess;
 }
-
-async function stopProcessTree(processRef) {
-  if (!processRef || processRef.exitCode !== null || !processRef.pid) {
-    return;
-  }
-
-  if (process.platform === 'win32') {
-    const killer = spawn(
-      'taskkill',
-      ['/PID', String(processRef.pid), '/T', '/F'],
-      { stdio: 'ignore' }
-    );
-    await once(killer, 'exit');
-    return;
-  }
-
-  processRef.kill('SIGTERM');
-  await Promise.race([
-    once(processRef, 'exit'),
-    new Promise((resolve) => setTimeout(resolve, 5000))
-  ]);
-}
-
 async function waitForWebReady(serverProcess) {
   const startedAt = Date.now();
 

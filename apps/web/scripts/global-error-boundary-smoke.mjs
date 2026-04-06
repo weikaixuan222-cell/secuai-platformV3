@@ -1,105 +1,14 @@
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { access, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import {
+  cleanupBrowser,
+  launchBrowser,
+  requireWebSocket,
+  waitForHttpOk
+} from './smoke-helpers.mjs';
 
 const WEB_BASE_URL = process.env.SECUAI_WEB_BASE_URL || 'http://127.0.0.1:3200';
 const CHROME_DEBUG_PORT = Number(process.env.SECUAI_CHROME_DEBUG_PORT || 9224);
 const probeId = `probe-${Date.now()}`;
 const SMOKE_PATH = `/error-boundary-smoke?trigger=1&probeId=${probeId}`;
-
-const chromeCandidates = [
-  process.env.SECUAI_CHROME_PATH,
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
-].filter(Boolean);
-
-function requireWebSocket() {
-  if (typeof WebSocket === 'undefined') {
-    throw new Error('Global WebSocket is unavailable in this Node.js runtime.');
-  }
-}
-
-async function waitForHttpOk(url, label) {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < 30000) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // Keep polling until the web app becomes ready.
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-
-  throw new Error(`${label} is not ready: ${url}`);
-}
-
-async function resolveChromePath() {
-  for (const candidate of chromeCandidates) {
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // Try the next known Chrome/Edge executable.
-    }
-  }
-
-  return '';
-}
-
-async function launchChrome() {
-  const chromePath = await resolveChromePath();
-
-  if (!chromePath) {
-    throw new Error('Chrome/Edge executable was not found.');
-  }
-
-  const profileDir = await mkdtemp(path.join(tmpdir(), 'secuai-global-error-smoke-'));
-  const chromeProcess = spawn(chromePath, [
-    '--headless=new',
-    '--disable-gpu',
-    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
-    `--user-data-dir=${profileDir}`,
-    'about:blank'
-  ], {
-    stdio: 'ignore'
-  });
-
-  return {
-    chromeProcess,
-    profileDir
-  };
-}
-
-async function cleanupChrome(chromeProcess, profileDir) {
-  if (chromeProcess.exitCode === null && !chromeProcess.killed) {
-    chromeProcess.kill('SIGKILL');
-  }
-
-  try {
-    if (chromeProcess.exitCode === null) {
-      await Promise.race([
-        once(chromeProcess, 'exit'),
-        new Promise((resolve) => setTimeout(resolve, 5000))
-      ]);
-    }
-  } catch {
-    // Continue with best-effort profile cleanup.
-  }
-
-  await rm(profileDir, {
-    recursive: true,
-    force: true
-  });
-}
 
 async function openCdpTarget() {
   const response = await fetch(
@@ -279,7 +188,10 @@ async function main() {
   requireWebSocket();
   await waitForHttpOk(`${WEB_BASE_URL}/login`, 'Web');
 
-  const { chromeProcess, profileDir } = await launchChrome();
+  const { browserProcess, profileDir } = await launchBrowser({
+    debugPort: CHROME_DEBUG_PORT,
+    profilePrefix: 'secuai-global-error-smoke-'
+  });
 
   try {
     await waitForHttpOk(
@@ -296,7 +208,10 @@ async function main() {
       result
     }, null, 2));
   } finally {
-    await cleanupChrome(chromeProcess, profileDir);
+    await cleanupBrowser({
+      browserProcess,
+      profileDir
+    });
   }
 }
 

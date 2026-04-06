@@ -147,9 +147,34 @@ npm run dev:web
 - middleware 与 protection/check 一致性
 
 ## Smoke
+这些 smoke 脚本当前已按跨平台方式运行，Windows、Linux、macOS 都走同一套 Node.js 启动逻辑，不依赖 PowerShell、CMD、`taskkill`、`findstr` 等平台专属 shell 写法。
+
+执行前请确认：
+- API 已可访问：默认 `http://127.0.0.1:3201`
+- Web 已可访问：默认 `http://127.0.0.1:3200`
+- 本机已安装可被脚本发现的 Chromium 内核浏览器
+
+浏览器发现顺序：
+1. 如果设置了 `SECUAI_CHROME_PATH`，优先使用它
+2. Windows 下继续兼容常见 Chrome / Edge 安装路径
+3. Linux / macOS 下会优先尝试 PATH 中的浏览器命令，例如：
+   - `google-chrome`
+   - `google-chrome-stable`
+   - `chromium`
+   - `chromium-browser`
+   - `microsoft-edge`
+   - `microsoft-edge-stable`
+4. macOS 下也会尝试 `/Applications` 中的 Chrome / Chromium / Edge 默认安装路径
+
+如果你的浏览器不在默认位置，建议显式设置：
+
+```bash
+export SECUAI_CHROME_PATH="/你的浏览器可执行文件绝对路径"
+```
+
 ### Policies smoke
 
-```powershell
+```bash
 npm run smoke:dashboard-policies --workspace @secuai/web
 ```
 
@@ -162,13 +187,13 @@ npm run smoke:dashboard-policies --workspace @secuai/web
 
 ### Dashboard / Events smoke
 
-```powershell
+```bash
 npm run smoke:dashboard-events --workspace @secuai/web
 ```
 
 ### Global error boundary smoke
 
-```powershell
+```bash
 npm run smoke:global-error --workspace @secuai/web
 npm run smoke:global-error:start --workspace @secuai/web
 ```

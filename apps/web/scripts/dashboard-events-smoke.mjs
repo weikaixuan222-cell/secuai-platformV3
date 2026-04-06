@@ -1,8 +1,9 @@
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { access, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import {
+  cleanupBrowser,
+  launchBrowser,
+  requireWebSocket,
+  waitForHttpOk
+} from './smoke-helpers.mjs';
 
 const API_BASE_URL = process.env.SECUAI_API_BASE_URL || 'http://127.0.0.1:3201';
 const WEB_BASE_URL = process.env.SECUAI_WEB_BASE_URL || 'http://127.0.0.1:3200';
@@ -10,20 +11,6 @@ const CHROME_DEBUG_PORT = Number(process.env.SECUAI_CHROME_DEBUG_PORT || 9222);
 const STRICT_MODE =
   process.argv.includes('--strict') || process.env.SECUAI_SMOKE_STRICT === '1';
 const DETAIL_ROUTE_ERROR_PROBE_ID = `detail-route-probe-${Date.now()}`;
-
-const chromeCandidates = [
-  process.env.SECUAI_CHROME_PATH,
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
-].filter(Boolean);
-
-function requireWebSocket() {
-  if (typeof WebSocket === 'undefined') {
-    throw new Error('Global WebSocket is unavailable in this Node.js runtime.');
-  }
-}
 
 function isExpectedBrowserErrorLog(message) {
   return (
@@ -59,25 +46,6 @@ async function requestJson(url, options = {}) {
   }
 
   return payload.data;
-}
-
-async function waitForHttpOk(url, label) {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < 30000) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // Keep polling until the local dev server becomes ready.
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-
-  throw new Error(`${label} is not ready: ${url}`);
 }
 
 async function createSite(authHeaders, tenantId, name, domain) {
@@ -235,76 +203,6 @@ async function bootstrapSmokeData() {
       : null,
     dashboardCardSkipReason
   };
-}
-
-async function resolveChromePath() {
-  for (const candidate of chromeCandidates) {
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // Fall back to process launch probing below.
-    }
-  }
-
-  return '';
-}
-
-async function launchChrome() {
-  const chromePath = await resolveChromePath();
-
-  if (!chromePath) {
-    throw new Error('Chrome/Edge executable was not found.');
-  }
-
-  const profileDir = await mkdtemp(path.join(tmpdir(), 'secuai-web-smoke-'));
-  const chromeProcess = spawn(chromePath, [
-    '--headless=new',
-    '--disable-gpu',
-    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
-    `--user-data-dir=${profileDir}`,
-    'about:blank'
-  ], {
-    stdio: 'ignore'
-  });
-
-  return {
-    chromeProcess,
-    profileDir
-  };
-}
-
-async function cleanupChrome(chromeProcess, profileDir) {
-  if (chromeProcess.exitCode === null && !chromeProcess.killed) {
-    chromeProcess.kill('SIGKILL');
-  }
-
-  try {
-    if (chromeProcess.exitCode === null) {
-      await Promise.race([
-        once(chromeProcess, 'exit'),
-        new Promise((resolve) => setTimeout(resolve, 5000))
-      ]);
-    }
-  } catch {
-    // Best-effort cleanup continues with profile directory removal retries.
-  }
-
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    try {
-      await rm(profileDir, {
-        recursive: true,
-        force: true
-      });
-      return;
-    } catch (error) {
-      if (attempt === 9) {
-        throw error;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
 }
 
 async function openCdpTarget() {
@@ -855,7 +753,10 @@ async function main() {
   await waitForHttpOk(`${WEB_BASE_URL}/login`, 'Web');
 
   const smokeContext = await bootstrapSmokeData();
-  const { chromeProcess, profileDir } = await launchChrome();
+  const { browserProcess, profileDir } = await launchBrowser({
+    debugPort: CHROME_DEBUG_PORT,
+    profilePrefix: 'secuai-web-smoke-'
+  });
 
   try {
     await waitForHttpOk(
@@ -872,7 +773,10 @@ async function main() {
       result
     }, null, 2));
   } finally {
-    await cleanupChrome(chromeProcess, profileDir);
+    await cleanupBrowser({
+      browserProcess,
+      profileDir
+    });
   }
 }
 

@@ -1,17 +1,9 @@
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
+import { spawnNpm } from './smoke-helpers.mjs';
 
 const buildIdPath = path.join(process.cwd(), '.next', 'BUILD_ID');
-
-function spawnNpm(args, options) {
-  if (process.platform === 'win32') {
-    return spawn('cmd.exe', ['/d', '/s', '/c', 'npm', ...args], options);
-  }
-
-  return spawn('npm', args, options);
-}
 
 async function hasProductionBuildId() {
   try {
