@@ -1,4 +1,4 @@
-import type { SecurityPolicyRow } from "../db/types.js";
+import type { BlockedEntityRow, SecurityPolicyRow } from "../db/types.js";
 import { findActiveBlockedIpBySiteId } from "../repositories/blockedEntitiesRepository.js";
 import { countRecentRequestsBySiteAndIp } from "../repositories/requestLogsRepository.js";
 import { findSecurityPolicyBySiteId } from "../repositories/securityPoliciesRepository.js";
@@ -35,6 +35,15 @@ export type ProtectionEnforcementResult = {
   mode: "monitor" | "protect";
   action: ProtectionAction;
   reasons: ProtectionReasonCode[];
+  matchedBlockedEntity?: {
+    id: number;
+    entityType: "ip";
+    entityValue: string;
+    source: "manual" | "automatic";
+    attackEventId: number | null;
+    originKind: "manual" | "automatic" | "event_disposition";
+    expiresAt: string | null;
+  };
 };
 
 const DEFAULT_POLICY: Omit<SecurityPolicyRow, "site_id" | "created_at" | "updated_at"> = {
@@ -63,11 +72,30 @@ async function resolvePolicy(siteId: string): Promise<SecurityPolicyRow> {
   };
 }
 
+function mapMatchedBlockedEntityTrace(blockedEntity: BlockedEntityRow): NonNullable<
+  ProtectionEnforcementResult["matchedBlockedEntity"]
+> {
+  return {
+    id: blockedEntity.id,
+    entityType: blockedEntity.entity_type,
+    entityValue: blockedEntity.entity_value,
+    source: blockedEntity.source,
+    attackEventId: blockedEntity.attack_event_id,
+    originKind: blockedEntity.attack_event_id
+      ? "event_disposition"
+      : blockedEntity.source === "automatic"
+        ? "automatic"
+        : "manual",
+    expiresAt: blockedEntity.expires_at ? blockedEntity.expires_at.toISOString() : null
+  };
+}
+
 export async function evaluateProtectionEnforcement(
   input: ProtectionEnforcementInput
 ): Promise<ProtectionEnforcementResult> {
   const policy = await resolvePolicy(input.siteId);
   const reasons: ProtectionReasonCode[] = [];
+  let matchedBlockedEntity: ProtectionEnforcementResult["matchedBlockedEntity"];
   const textFields = [
     { name: "path", value: input.path },
     { name: "queryString", value: input.queryString },
@@ -84,6 +112,7 @@ export async function evaluateProtectionEnforcement(
 
     if (blockedIp) {
       reasons.push("blocked_ip");
+      matchedBlockedEntity = mapMatchedBlockedEntityTrace(blockedIp);
     }
   }
 
@@ -120,6 +149,7 @@ export async function evaluateProtectionEnforcement(
     mode: policy.mode,
     action:
       reasons.length === 0 ? "allow" : policy.mode === "protect" ? "block" : "monitor",
-    reasons
+    reasons,
+    matchedBlockedEntity
   };
 }

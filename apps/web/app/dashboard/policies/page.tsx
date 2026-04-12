@@ -31,13 +31,15 @@ import {
   updateSiteSecurityPolicy
 } from '@/lib/services';
 import {
+  formatBlockedEntityOrigin,
   formatBlockedEntitySource,
   formatBlockedEntityType,
   formatDateTime,
   formatProtectionAction,
   formatProtectionReason,
   formatPolicyMode,
-  formatSwitchState
+  formatSwitchState,
+  formatIsActive
 } from '@/lib/securityDisplay';
 import SiteFilterSelect from '../components/SiteFilterSelect';
 import StateCard from '../components/StateCard';
@@ -129,10 +131,42 @@ function buildProtectionResultDescription(result: ProtectionCheckResult): string
   }
 
   if (result.action === 'block') {
-    return '当前策略处于防护模式，命中条件后会执行阻断。';
+    return '当前策略处于防护模式，命中条件后会执行拦截。';
   }
 
   return '当前策略处于监控模式，命中条件后会保留原因并继续放行。';
+}
+
+function getLatestSecurityActivityAt(
+  summary: DashboardSiteSummaryItem | null
+): string | null {
+  if (!summary) {
+    return null;
+  }
+
+  let latestValue: string | null = null;
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+
+  for (const candidate of [
+    summary.latestRequestLogAt,
+    summary.latestAttackEventAt,
+    summary.latestAiRiskResultAt
+  ]) {
+    if (!candidate) {
+      continue;
+    }
+
+    const nextTimestamp = Date.parse(candidate);
+
+    if (Number.isNaN(nextTimestamp) || nextTimestamp <= latestTimestamp) {
+      continue;
+    }
+
+    latestTimestamp = nextTimestamp;
+    latestValue = candidate;
+  }
+
+  return latestValue;
 }
 
 export default function PoliciesPage() {
@@ -166,6 +200,10 @@ export default function PoliciesPage() {
   const selectedSiteSummary = useMemo(
     () => data.siteSummaries.find((site) => site.siteId === selectedSiteId) || null,
     [data.siteSummaries, selectedSiteId]
+  );
+  const latestSecurityActivityAt = useMemo(
+    () => getLatestSecurityActivityAt(selectedSiteSummary),
+    [selectedSiteSummary]
   );
   const isDeletingBlockedEntity = deletingBlockedEntityId !== null;
   const isPageBusy =
@@ -269,7 +307,7 @@ export default function PoliciesPage() {
         securityPolicy: result.securityPolicy
       }));
       setPolicyDraft(buildPolicyDraft(result.securityPolicy));
-      setActionMessage('策略配置已保存，新的防护规则已对当前站点生效。');
+      setActionMessage('策略配置已保存。你可以使用页面下方的模拟器验证策略拦截效果。');
     } catch (err: any) {
       setActionError(err.message || '策略配置保存失败，请检查阈值后重试。');
     } finally {
@@ -456,6 +494,31 @@ export default function PoliciesPage() {
       }
     ]
     : [];
+  const overviewItems = selectedSiteSummary
+    ? [
+      {
+        label: '当前封禁 IP',
+        value: String(data.blockedEntities.length)
+      },
+      {
+        label: '请求日志',
+        value: String(selectedSiteSummary.requestLogCount)
+      },
+      {
+        label: '攻击事件',
+        value: String(selectedSiteSummary.attackEventCount)
+      },
+      {
+        label: '高风险结果',
+        value: String(selectedSiteSummary.highRiskResultCount)
+      }
+    ]
+    : [];
+  const siteOverviewModeHint = data.securityPolicy
+    ? data.securityPolicy.mode === 'protect'
+      ? '当前为防护模式：命中已开启规则后会直接拦截请求。'
+      : '当前为监控模式：命中已开启规则后会保留原因并继续放行。'
+    : '';
 
   return (
     <div className={styles.container}>
@@ -510,6 +573,131 @@ export default function PoliciesPage() {
         </div>
       </form>
 
+      {loading ? (
+        <StatePanelCard
+          className={styles.siteOverviewPanel}
+          panelTestId="policy-site-overview-panel"
+          tone="loading"
+          title="正在加载当前站点安全总览"
+          description="正在读取当前站点的策略模式、封禁规模和最近安全活动摘要。"
+        />
+      ) : error ? (
+        <StatePanelCard
+          className={styles.siteOverviewPanel}
+          panelTestId="policy-site-overview-panel"
+          tone="error"
+          title="当前站点安全总览加载失败"
+          description={error}
+          actionLabel="重试加载总览"
+          onAction={() => loadPolicyData(selectedSiteId)}
+        />
+      ) : siteOptions.length === 0 ? (
+        <StatePanelCard
+          className={styles.siteOverviewPanel}
+          panelTestId="policy-site-overview-panel"
+          tone="empty"
+          title="暂无可展示的站点总览"
+          description="当前租户还没有可关联的站点。请先完成站点接入，再回到这里查看站点安全总览。"
+          actionLabel="返回安全总览"
+          actionHref="/dashboard"
+        />
+      ) : !selectedSiteSummary || !data.securityPolicy ? (
+        <StatePanelCard
+          className={styles.siteOverviewPanel}
+          panelTestId="policy-site-overview-panel"
+          tone="empty"
+          title="请选择一个站点"
+          description="选择站点后，这里会先显示当前站点的防护模式、封禁规模和最近安全活动，再继续策略操作。"
+        />
+      ) : (
+        <section
+          className={`glass-panel ${styles.siteOverviewPanel}`}
+          aria-labelledby="policy-site-overview-title"
+          data-testid="policy-site-overview"
+        >
+          <div className={styles.siteOverviewHeader}>
+            <div>
+              <p className={styles.panelEyebrow}>当前站点安全总览</p>
+              <h2 id="policy-site-overview-title" className={styles.panelTitle}>
+                {selectedSiteSummary.siteName}
+              </h2>
+              <p className={styles.siteOverviewDomain}>
+                {selectedSiteSummary.siteDomain}
+              </p>
+            </div>
+
+            <div className={styles.siteOverviewActions}>
+              <span className={`${styles.modeBadge} ${styles[data.securityPolicy.mode]}`}>
+                {formatPolicyMode(data.securityPolicy.mode)}
+              </span>
+              <Link
+                href={`/dashboard/events?siteId=${encodeURIComponent(selectedSiteId)}`}
+                className={styles.overviewLink}
+                aria-label={`进入 ${selectedSiteSummary.siteName} 的事件列表，并保留当前站点范围`}
+                data-testid="policy-site-overview-events-link"
+              >
+                进入该站点事件列表
+              </Link>
+              <p
+                className={styles.siteOverviewEventsHint}
+                data-testid="policy-site-overview-events-hint"
+              >
+                跳转后会自动保留当前站点范围，只查看该站点的 <code>attack_events</code> 列表。
+              </p>
+            </div>
+          </div>
+
+          <p
+            className={styles.siteOverviewModeHint}
+            data-testid="policy-site-overview-mode-hint"
+          >
+            {siteOverviewModeHint}
+          </p>
+
+          <div className={styles.siteOverviewStats}>
+            {overviewItems.map((item) => (
+              <article
+                key={item.label}
+                className={styles.siteOverviewItem}
+                data-testid="policy-site-overview-item"
+              >
+                <span className={styles.siteOverviewLabel}>{item.label}</span>
+                <strong className={styles.siteOverviewValue}>{item.value}</strong>
+              </article>
+            ))}
+            <article
+              className={styles.siteOverviewItem}
+              data-testid="policy-site-overview-item"
+            >
+              <span className={styles.siteOverviewLabel}>最近安全活动</span>
+              <strong
+                className={styles.siteOverviewValue}
+                data-testid="policy-site-overview-latest-activity"
+              >
+                {formatDateTime(latestSecurityActivityAt)}
+              </strong>
+            </article>
+          </div>
+
+          <div className={styles.siteOverviewHints}>
+            <p
+              className={styles.siteOverviewHint}
+              data-testid="policy-site-overview-latest-hint"
+            >
+              最近安全活动时间取 <code>request_logs</code>、<code>attack_events</code>、
+              <code>ai_risk_results</code> 三者中的最新时间。
+            </p>
+            <p
+              className={styles.siteOverviewHint}
+              data-testid="policy-site-overview-counts-hint"
+            >
+              攻击事件数来自 <code>detection</code> 生成的 <code>attack_events</code>；
+              高风险结果数只统计 AI 判定为 <code>high / critical</code> 的结果。
+            </p>
+          </div>
+        </section>
+      )}
+
       <section className={styles.grid}>
         <div
           className={`glass-panel ${styles.policyPanel}`}
@@ -546,7 +734,7 @@ export default function PoliciesPage() {
             <StateCard
               tone="empty"
               title="暂无可配置站点"
-              description="当前租户还没有可配置的站点。请先完成站点接入并生成 site-summaries，再回到这里维护防护策略。"
+              description="当前租户还没有可配置的站点。请先完成站点接入，再回到这里维护防护策略。"
               actionLabel="返回安全总览"
               actionHref="/dashboard"
               testId="policy-no-site-empty-state"
@@ -795,22 +983,51 @@ export default function PoliciesPage() {
             />
           ) : (
             <div className={styles.blockList}>
-              {data.blockedEntities.map((entity) => (
+              {data.blockedEntities.map((entity) => {
+                const blockedEntityOrigin = formatBlockedEntityOrigin(
+                  entity.source,
+                  entity.reason,
+                  entity.originKind
+                );
+
+                return (
                 <article key={entity.id} className={styles.blockItem}>
                   <div className={styles.itemTopRow}>
                     <div>
                       <h3 className={styles.itemTitle}>{entity.entityValue}</h3>
                       <p className={styles.itemDescription}>{entity.reason}</p>
                     </div>
-                    <span className={styles.entityType}>
-                      {formatBlockedEntityType(entity.entityType)}
-                    </span>
+                    <div className={styles.itemBadgeGroup}>
+                      {blockedEntityOrigin ? (
+                        <span
+                          className={styles.originBadge}
+                          data-testid={`blocked-entity-origin-${entity.id}`}
+                        >
+                          {blockedEntityOrigin}
+                        </span>
+                      ) : null}
+                      <span className={styles.entityType}>
+                        {formatBlockedEntityType(entity.entityType)}
+                      </span>
+                    </div>
                   </div>
 
                   <div className={styles.blockMetaRow}>
+                    <span>当前状态 {entity.isActive !== undefined ? <strong data-testid={`blocked-entity-is-active-${entity.id}`}>{formatIsActive(entity.isActive)}</strong> : '未知'}</span>
                     <span>来源 {formatBlockedEntitySource(entity.source)}</span>
                     <span>创建时间 {formatDateTime(entity.createdAt)}</span>
-                    <span>过期时间 {formatDateTime(entity.expiresAt)}</span>
+                    {entity.isActive === false ? null : (
+                      <span>过期时间 {formatDateTime(entity.expiresAt)}</span>
+                    )}
+                    {entity.attackEventId ? (
+                      <Link
+                        href={`/dashboard/events/${entity.attackEventId}`}
+                        className={styles.eventLink}
+                        data-testid={`blocked-entity-revert-link-${entity.id}`}
+                      >
+                        查看关联事件
+                      </Link>
+                    ) : null}
                   </div>
 
                   <button
@@ -830,7 +1047,7 @@ export default function PoliciesPage() {
                       : '删除封禁记录'}
                   </button>
                 </article>
-              ))}
+              )})}
             </div>
           )}
 
@@ -1106,7 +1323,7 @@ export default function PoliciesPage() {
                   className={styles.emptyReasonText}
                   data-testid="protection-simulator-reasons"
                 >
-                  未命中任何阻断条件。
+                  未命中任何拦截条件。
                 </p>
               )}
             </article>

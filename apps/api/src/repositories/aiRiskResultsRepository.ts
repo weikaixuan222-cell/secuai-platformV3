@@ -15,38 +15,73 @@ function validateTarget(input: CreateAiRiskResultInput): void {
 export async function createAiRiskResult(input: CreateAiRiskResultInput): Promise<AiRiskResultRow> {
   validateTarget(input);
 
-  const result = await query<AiRiskResultRow>(
-    `
-      INSERT INTO ai_risk_results (
-        tenant_id,
-        site_id,
-        request_log_id,
-        attack_event_id,
-        model_name,
-        model_version,
-        risk_score,
-        risk_level,
-        explanation,
-        factors,
-        raw_response
+  const values = [
+    input.tenantId,
+    input.siteId,
+    input.requestLogId ?? null,
+    input.attackEventId ?? null,
+    AI_RISK_MODEL_NAME,
+    AI_RISK_MODEL_VERSION,
+    input.riskScore,
+    input.riskLevel,
+    input.explanation ?? null,
+    input.factors ?? null,
+    input.rawResponse ?? null
+  ];
+
+  const result = input.attackEventId
+    ? await query<AiRiskResultRow>(
+        `
+          INSERT INTO ai_risk_results (
+            tenant_id,
+            site_id,
+            request_log_id,
+            attack_event_id,
+            model_name,
+            model_version,
+            risk_score,
+            risk_level,
+            explanation,
+            factors,
+            raw_response
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ON CONFLICT (attack_event_id, model_name, model_version)
+          WHERE attack_event_id IS NOT NULL
+          DO UPDATE SET
+            tenant_id = EXCLUDED.tenant_id,
+            site_id = EXCLUDED.site_id,
+            request_log_id = EXCLUDED.request_log_id,
+            risk_score = EXCLUDED.risk_score,
+            risk_level = EXCLUDED.risk_level,
+            explanation = EXCLUDED.explanation,
+            factors = EXCLUDED.factors,
+            raw_response = EXCLUDED.raw_response,
+            analyzed_at = NOW()
+          RETURNING *
+        `,
+        values
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      RETURNING *
-    `,
-    [
-      input.tenantId,
-      input.siteId,
-      input.requestLogId ?? null,
-      input.attackEventId ?? null,
-      AI_RISK_MODEL_NAME,
-      AI_RISK_MODEL_VERSION,
-      input.riskScore,
-      input.riskLevel,
-      input.explanation ?? null,
-      input.factors ?? null,
-      input.rawResponse ?? null
-    ]
-  );
+    : await query<AiRiskResultRow>(
+        `
+          INSERT INTO ai_risk_results (
+            tenant_id,
+            site_id,
+            request_log_id,
+            attack_event_id,
+            model_name,
+            model_version,
+            risk_score,
+            risk_level,
+            explanation,
+            factors,
+            raw_response
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          RETURNING *
+        `,
+        values
+      );
 
   return result.rows[0];
 }

@@ -8,8 +8,9 @@ function getExecutor(executor?: QueryExecutor): QueryExecutor {
 export async function createAttackEvent(
   input: CreateAttackEventInput,
   executor?: QueryExecutor
-): Promise<AttackEventRow> {
-  const result = await getExecutor(executor).query<AttackEventRow>(
+): Promise<{ attackEvent: AttackEventRow; created: boolean }> {
+  const activeExecutor = getExecutor(executor);
+  const insertedResult = await activeExecutor.query<AttackEventRow>(
     `
       INSERT INTO attack_events (
         tenant_id,
@@ -22,6 +23,8 @@ export async function createAttackEvent(
         details
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (request_log_id, event_type, rule_code)
+      DO NOTHING
       RETURNING *
     `,
     [
@@ -36,7 +39,33 @@ export async function createAttackEvent(
     ]
   );
 
-  return result.rows[0];
+  if (insertedResult.rows[0]) {
+    return {
+      attackEvent: insertedResult.rows[0],
+      created: true
+    };
+  }
+
+  const existingResult = await activeExecutor.query<AttackEventRow>(
+    `
+      SELECT *
+      FROM attack_events
+      WHERE request_log_id = $1
+        AND event_type = $2
+        AND rule_code = $3
+      LIMIT 1
+    `,
+    [input.requestLogId, input.eventType, input.ruleCode]
+  );
+
+  if (!existingResult.rows[0]) {
+    throw new Error("Failed to read existing attack_event after duplicate detection deduplication.");
+  }
+
+  return {
+    attackEvent: existingResult.rows[0],
+    created: false
+  };
 }
 
 export async function listAttackEvents(filters: AttackEventListFilters): Promise<AttackEventRow[]> {

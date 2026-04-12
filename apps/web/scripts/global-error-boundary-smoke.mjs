@@ -2,17 +2,18 @@ import {
   cleanupBrowser,
   launchBrowser,
   requireWebSocket,
+  resolveChromeDebugPort,
   waitForHttpOk
 } from './smoke-helpers.mjs';
 
 const WEB_BASE_URL = process.env.SECUAI_WEB_BASE_URL || 'http://127.0.0.1:3200';
-const CHROME_DEBUG_PORT = Number(process.env.SECUAI_CHROME_DEBUG_PORT || 9224);
+const DEFAULT_CHROME_DEBUG_PORT = 9224;
 const probeId = `probe-${Date.now()}`;
 const SMOKE_PATH = `/error-boundary-smoke?trigger=1&probeId=${probeId}`;
 
-async function openCdpTarget() {
+async function openCdpTarget(chromeDebugPort) {
   const response = await fetch(
-    `http://127.0.0.1:${CHROME_DEBUG_PORT}/json/new?about:blank`,
+    `http://127.0.0.1:${chromeDebugPort}/json/new?about:blank`,
     {
       method: 'PUT'
     }
@@ -113,8 +114,8 @@ async function createCdpClient(wsUrl) {
   };
 }
 
-async function runSmoke() {
-  const client = await createCdpClient(await openCdpTarget());
+async function runSmoke(chromeDebugPort) {
+  const client = await createCdpClient(await openCdpTarget(chromeDebugPort));
   await client.init();
 
   await client.navigate(`${WEB_BASE_URL}${SMOKE_PATH}`);
@@ -188,18 +189,19 @@ async function main() {
   requireWebSocket();
   await waitForHttpOk(`${WEB_BASE_URL}/login`, 'Web');
 
+  const chromeDebugPort = await resolveChromeDebugPort(DEFAULT_CHROME_DEBUG_PORT);
   const { browserProcess, profileDir } = await launchBrowser({
-    debugPort: CHROME_DEBUG_PORT,
+    debugPort: chromeDebugPort,
     profilePrefix: 'secuai-global-error-smoke-'
   });
 
   try {
     await waitForHttpOk(
-      `http://127.0.0.1:${CHROME_DEBUG_PORT}/json/version`,
+      `http://127.0.0.1:${chromeDebugPort}/json/version`,
       'Chrome DevTools'
     );
 
-    const result = await runSmoke();
+    const result = await runSmoke(chromeDebugPort);
     assertSmokeResult(result);
 
     console.log(JSON.stringify({

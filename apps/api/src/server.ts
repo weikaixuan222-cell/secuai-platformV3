@@ -465,6 +465,13 @@ function mapSecurityPolicy(policy: Awaited<ReturnType<typeof upsertSecurityPolic
 }
 
 function mapBlockedEntity(entity: Awaited<ReturnType<typeof createBlockedEntity>>): JsonObject {
+  const isActive = entity.expires_at ? entity.expires_at.getTime() > Date.now() : true;
+  const originKind = entity.attack_event_id
+    ? "event_disposition"
+    : entity.source === "automatic"
+      ? "automatic"
+      : "manual";
+
   return {
     id: entity.id,
     siteId: entity.site_id,
@@ -472,8 +479,195 @@ function mapBlockedEntity(entity: Awaited<ReturnType<typeof createBlockedEntity>
     entityValue: entity.entity_value,
     reason: entity.reason,
     source: entity.source,
+    attackEventId: entity.attack_event_id,
+    originKind,
+    isActive,
     expiresAt: entity.expires_at ? entity.expires_at.toISOString() : null,
     createdAt: entity.created_at.toISOString()
+  };
+}
+
+function pickActiveBlockedEntity(
+  blockedEntities: Array<ReturnType<typeof mapBlockedEntity>>
+): ReturnType<typeof mapBlockedEntity> | null {
+  return blockedEntities.find((item) => item.isActive === true) ?? null;
+}
+
+function buildDispositionSummary(input: {
+  blockedEntities: Array<ReturnType<typeof mapBlockedEntity>>;
+  activeBlockedEntity: ReturnType<typeof mapBlockedEntity> | null;
+}): {
+  status: "none" | "active" | "inactive";
+  blockedEntityCount: number;
+  activeBlockedEntityId: number | null;
+  activeEntityType: "ip" | null;
+  activeEntityValue: string | null;
+  activeSource: "manual" | "automatic" | null;
+  activeOriginKind: "manual" | "automatic" | "event_disposition" | null;
+  activeAttackEventId: number | null;
+} {
+  if (input.activeBlockedEntity) {
+    return {
+      status: "active",
+      blockedEntityCount: input.blockedEntities.length,
+      activeBlockedEntityId: input.activeBlockedEntity.id as number,
+      activeEntityType: input.activeBlockedEntity.entityType as "ip",
+      activeEntityValue: input.activeBlockedEntity.entityValue as string,
+      activeSource: input.activeBlockedEntity.source as "manual" | "automatic",
+      activeOriginKind: input.activeBlockedEntity.originKind as
+        | "manual"
+        | "automatic"
+        | "event_disposition",
+      activeAttackEventId:
+        input.activeBlockedEntity.attackEventId === null
+          ? null
+          : Number(input.activeBlockedEntity.attackEventId)
+    };
+  }
+
+  if (input.blockedEntities.length > 0) {
+    return {
+      status: "inactive",
+      blockedEntityCount: input.blockedEntities.length,
+      activeBlockedEntityId: null,
+      activeEntityType: null,
+      activeEntityValue: null,
+      activeSource: null,
+      activeOriginKind: null,
+      activeAttackEventId: null
+    };
+  }
+
+  return {
+    status: "none",
+    blockedEntityCount: 0,
+    activeBlockedEntityId: null,
+    activeEntityType: null,
+    activeEntityValue: null,
+    activeSource: null,
+    activeOriginKind: null,
+    activeAttackEventId: null
+  };
+}
+
+function extractAttackEventProtectionEnforcement(
+  details: unknown
+):
+  | {
+      mode: "monitor" | "protect";
+      action: "allow" | "monitor" | "block";
+      reasons: string[];
+      matchedBlockedEntity: {
+        id: number;
+        entityType: "ip";
+        entityValue: string;
+        source: "manual" | "automatic";
+        attackEventId: number | null;
+        originKind: "manual" | "automatic" | "event_disposition";
+        expiresAt: string | null;
+      } | null;
+    }
+  | null {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return null;
+  }
+
+  const rawProtectionEnforcement = (details as Record<string, unknown>).protectionEnforcement;
+
+  if (
+    !rawProtectionEnforcement ||
+    typeof rawProtectionEnforcement !== "object" ||
+    Array.isArray(rawProtectionEnforcement)
+  ) {
+    return null;
+  }
+
+  const traceRecord = rawProtectionEnforcement as Record<string, unknown>;
+  const rawMode = traceRecord.mode;
+  const rawAction = traceRecord.action;
+  const rawReasons = traceRecord.reasons;
+
+  if (rawMode !== "monitor" && rawMode !== "protect") {
+    return null;
+  }
+
+  if (rawAction !== "allow" && rawAction !== "monitor" && rawAction !== "block") {
+    return null;
+  }
+
+  if (!Array.isArray(rawReasons) || rawReasons.some((item) => typeof item !== "string")) {
+    return null;
+  }
+
+  const rawMatchedBlockedEntity = traceRecord.matchedBlockedEntity;
+  let matchedBlockedEntity:
+    | {
+        id: number;
+        entityType: "ip";
+        entityValue: string;
+        source: "manual" | "automatic";
+        attackEventId: number | null;
+        originKind: "manual" | "automatic" | "event_disposition";
+        expiresAt: string | null;
+      }
+    | null
+    | undefined;
+
+  if (rawMatchedBlockedEntity === null) {
+    matchedBlockedEntity = null;
+  } else if (rawMatchedBlockedEntity !== undefined) {
+    if (
+      typeof rawMatchedBlockedEntity !== "object" ||
+      Array.isArray(rawMatchedBlockedEntity)
+    ) {
+      return null;
+    }
+
+    const entityRecord = rawMatchedBlockedEntity as Record<string, unknown>;
+    const id =
+      typeof entityRecord.id === "number"
+        ? entityRecord.id
+        : typeof entityRecord.id === "string" && /^\d+$/.test(entityRecord.id)
+          ? Number(entityRecord.id)
+          : null;
+    const attackEventId =
+      entityRecord.attackEventId === null
+        ? null
+        : typeof entityRecord.attackEventId === "number"
+          ? entityRecord.attackEventId
+          : typeof entityRecord.attackEventId === "string" && /^\d+$/.test(entityRecord.attackEventId)
+            ? Number(entityRecord.attackEventId)
+            : null;
+
+    if (
+      id === null ||
+      entityRecord.entityType !== "ip" ||
+      typeof entityRecord.entityValue !== "string" ||
+      (entityRecord.source !== "manual" && entityRecord.source !== "automatic") ||
+      (entityRecord.originKind !== "manual" &&
+        entityRecord.originKind !== "automatic" &&
+        entityRecord.originKind !== "event_disposition") ||
+      (entityRecord.expiresAt !== null && typeof entityRecord.expiresAt !== "string")
+    ) {
+      return null;
+    }
+
+    matchedBlockedEntity = {
+      id,
+      entityType: "ip",
+      entityValue: entityRecord.entityValue,
+      source: entityRecord.source,
+      attackEventId,
+      originKind: entityRecord.originKind,
+      expiresAt: entityRecord.expiresAt
+    };
+  }
+
+  return {
+    mode: rawMode,
+    action: rawAction,
+    reasons: rawReasons,
+    matchedBlockedEntity: matchedBlockedEntity ?? null
   };
 }
 
@@ -822,7 +1016,29 @@ async function handleListBlockedEntities(
 ): Promise<void> {
   const auth = await requireAuth(request);
   const site = await requireSiteAccess(auth, siteId);
-  const items = await listBlockedEntitiesBySiteId(site.id);
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const attackEventId = parseOptionalPositiveIntegerQueryParam(
+    requestUrl.searchParams.get("attackEventId"),
+    "attackEventId"
+  );
+
+  if (attackEventId !== undefined) {
+    const attackEvent = await findAttackEventById(attackEventId);
+
+    if (!attackEvent) {
+      throw new ApiError(404, "ATTACK_EVENT_NOT_FOUND", "Attack event not found.");
+    }
+
+    if (attackEvent.site_id !== site.id) {
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "attackEventId must belong to the current site."
+      );
+    }
+  }
+
+  const items = await listBlockedEntitiesBySiteId(site.id, { attackEventId });
 
   sendSuccess(response, 200, {
     items: items.map(mapBlockedEntity)
@@ -846,6 +1062,7 @@ async function handleCreateBlockedEntity(
     optional: true
   });
   const expiresAtRaw = body.expiresAt;
+  const attackEventId = getOptionalInteger(body, "attackEventId", { min: 1 });
   const expiresAt =
     expiresAtRaw === undefined || expiresAtRaw === null
       ? undefined
@@ -853,6 +1070,22 @@ async function handleCreateBlockedEntity(
 
   if (expiresAt && expiresAt.getTime() <= Date.now()) {
     throw new ApiError(400, "VALIDATION_ERROR", "expiresAt must be a future datetime.");
+  }
+
+  if (attackEventId !== undefined) {
+    const attackEvent = await findAttackEventById(attackEventId);
+
+    if (!attackEvent) {
+      throw new ApiError(404, "ATTACK_EVENT_NOT_FOUND", "Attack event not found.");
+    }
+
+    if (attackEvent.site_id !== site.id) {
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "attackEventId must belong to the current site."
+      );
+    }
   }
 
   const blockedEntity = await createBlockedEntity({
@@ -863,6 +1096,7 @@ async function handleCreateBlockedEntity(
     ),
     reason: getTrimmedString(body, "reason", { minLength: 2, maxLength: 500 })!,
     source: sourceValue ? parseBlockedEntitySource(sourceValue) : undefined,
+    attackEventId,
     expiresAt
   });
 
@@ -944,24 +1178,26 @@ async function handleCreateRequestLog(
       403,
       "PROTECTION_BLOCKED",
       "Request was blocked by the site security policy.",
-      {
-        siteId: protectionContext.site.id,
-        mode: protectionContext.protection.mode,
-        reasons: protectionContext.protection.reasons
-      }
-    );
+        {
+          siteId: protectionContext.site.id,
+          mode: protectionContext.protection.mode,
+          reasons: protectionContext.protection.reasons,
+          matchedBlockedEntity: protectionContext.protection.matchedBlockedEntity ?? null
+        }
+      );
   }
 
-  if (protectionContext.protection.action === "monitor") {
-    input.metadata = {
-      ...(input.metadata ?? {}),
-      protectionEnforcement: {
-        mode: protectionContext.protection.mode,
-        action: protectionContext.protection.action,
-        reasons: protectionContext.protection.reasons
-      }
-    };
-  }
+    if (protectionContext.protection.action === "monitor") {
+      input.metadata = {
+        ...(input.metadata ?? {}),
+        protectionEnforcement: {
+          mode: protectionContext.protection.mode,
+          action: protectionContext.protection.action,
+          reasons: protectionContext.protection.reasons,
+          matchedBlockedEntity: protectionContext.protection.matchedBlockedEntity ?? null
+        }
+      };
+    }
 
   const requestLog = await createRequestLog(input);
 
@@ -1514,6 +1750,16 @@ async function handleGetAttackEventDetail(
   }
 
   const aiRiskResult = await findLatestRiskResultForAttackEvent(attackEvent.id);
+  const blockedEntities = await listBlockedEntitiesBySiteId(attackEvent.site_id, {
+    attackEventId: attackEvent.id
+  });
+  const mappedBlockedEntities = blockedEntities.map(mapBlockedEntity);
+  const activeBlockedEntity = pickActiveBlockedEntity(mappedBlockedEntities);
+  const dispositionSummary = buildDispositionSummary({
+    blockedEntities: mappedBlockedEntities,
+    activeBlockedEntity
+  });
+  const protectionEnforcement = extractAttackEventProtectionEnforcement(attackEvent.details);
 
   sendSuccess(response, 200, {
     attackEvent: {
@@ -1550,7 +1796,11 @@ async function handleGetAttackEventDetail(
           rawResponse: aiRiskResult.raw_response,
           createdAt: aiRiskResult.created_at.toISOString()
         }
-      : null
+      : null,
+    protectionEnforcement,
+    blockedEntities: mappedBlockedEntities,
+    activeBlockedEntity,
+    dispositionSummary
   });
 }
 

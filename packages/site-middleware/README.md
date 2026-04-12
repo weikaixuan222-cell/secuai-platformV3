@@ -50,9 +50,15 @@ x-site-ingestion-key: YOUR_SITE_INGESTION_KEY
 - 错误时，平台会返回 `INVALID_INGESTION_KEY`
 
 ## 最小接入示例
-示例文件：
-- [native-node-server.ts](E:/cursor/SecuAI智能防御系统V2.0/packages/site-middleware/examples/native-node-server.ts)
-- [examples/README.md](E:/cursor/SecuAI智能防御系统V2.0/packages/site-middleware/examples/README.md)
+如果你是第一次把企业站点接到平台，建议按下面顺序阅读：
+
+1. 先看 [examples/README.md](E:/cursor/SecuAI智能防御系统V2.0/packages/site-middleware/examples/README.md)
+   - 这里已经收口成“第一次真实站点接入”的最短路径
+   - 默认先走 `demo:onboard-native-site`
+   - 如果还没有真实 site 配置，只是想先确认整条链路能跑通，再用 `demo:e2e-monitor`
+   - 如果你是接入方，优先看里面的“第一次接手的最短路径”和“接入成功确认 Checklist”
+2. 再看 [native-node-server.ts](E:/cursor/SecuAI智能防御系统V2.0/packages/site-middleware/examples/native-node-server.ts)
+   - 这是可直接运行的 native Node.js 接入样板
 
 核心调用方式：
 
@@ -128,7 +134,32 @@ npm run smoke:e2e-enforcement --workspace @secuai/site-middleware
 - blocked IP 命中时 middleware 与 API 的 `reasons` / `mode` 一致
 - middleware 的本地阻断响应返回 `REQUEST_BLOCKED`
 
-## 最小演示步骤
+## 两种验证入口
+
+### 1. 接入方视角: native-node 验收样板
+
+适合回答“企业网站怎样更顺手地接入平台”这个问题：
+
+```powershell
+npm run build --workspace @secuai/site-middleware
+npm run demo:native-node --workspace @secuai/site-middleware
+```
+
+启动后按 [examples/README.md](E:/cursor/SecuAI智能防御系统V2.0/packages/site-middleware/examples/README.md) 的三步验收：
+- 普通请求返回 `200 + protection.action=allow`
+- 同一 blocked IP 在 `monitor` 下返回 `200 + protection.action=monitor`
+- 不改请求、只把 policy 切到 `protect` 后返回 `403 + REQUEST_BLOCKED`
+
+如果你已经完成这三步，下一步优先看同一份文档里的“两类基础规则验收 Runbook”：
+- `blocked_ip` 怎样验证生效
+- `blocked_rate_limit` 怎样验证生效
+- `monitor / protect` 下各自应该看到什么
+- 哪些现象算“平台判定与 middleware 已一致”
+
+### 2. 平台一致性视角: enforcement smoke
+
+适合验证 middleware 与平台 `POST /api/v1/protection/check` 是否保持一致：
+
 1. 启动 PostgreSQL、Redis、API。
 2. 运行 `smoke:e2e-enforcement`。
 3. 观察脚本输出：
@@ -136,6 +167,15 @@ npm run smoke:e2e-enforcement --workspace @secuai/site-middleware
    - `monitor consistency verified`
    - `protect consistency verified`
 4. 如需串到前端演示，再打开 `/dashboard/policies` 展示相同 site policy / blocked entities / simulator 行为。
+
+如果你想分别验证两类基础规则的完整闭环，再运行：
+
+```powershell
+npm run smoke:blocked-entity-lifecycle --workspace @secuai/site-middleware
+npm run smoke:rate-limit-lifecycle --workspace @secuai/site-middleware
+```
+
+前者验证 `blocked_ip` 生命周期，后者验证 `blocked_rate_limit` 在 `monitor / protect` 下的最小行为。
 
 ## 常见失败码
 | code | 来源 | 说明 |

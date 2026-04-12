@@ -18,9 +18,20 @@ export interface SiteProtectionDecision {
   action: SiteProtectionAction;
   mode: SiteProtectionMode | "fail-open";
   reasons: string[];
+  matchedBlockedEntity?: SiteMatchedBlockedEntity;
   monitored: boolean;
   failOpen: boolean;
   failOpenReason?: string;
+}
+
+export interface SiteMatchedBlockedEntity {
+  id: number;
+  entityType: "ip";
+  entityValue: string;
+  source: "manual" | "automatic";
+  attackEventId: number | null;
+  originKind: "manual" | "automatic" | "event_disposition";
+  expiresAt: string | null;
 }
 
 export interface SiteProtectionClientOptions {
@@ -101,6 +112,55 @@ function extractClientIp(request: IncomingMessage): string | undefined {
   return request.socket.remoteAddress ?? undefined;
 }
 
+function normalizeMatchedBlockedEntity(
+  value: unknown
+): SiteProtectionDecision["matchedBlockedEntity"] {
+  if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const entityRecord = value as Record<string, unknown>;
+  const id =
+    typeof entityRecord.id === "number"
+      ? entityRecord.id
+      : typeof entityRecord.id === "string" && /^\d+$/.test(entityRecord.id)
+        ? Number(entityRecord.id)
+        : null;
+  const attackEventId =
+    entityRecord.attackEventId === null
+      ? null
+      : typeof entityRecord.attackEventId === "number"
+        ? entityRecord.attackEventId
+        : typeof entityRecord.attackEventId === "string" &&
+            /^\d+$/.test(entityRecord.attackEventId)
+          ? Number(entityRecord.attackEventId)
+          : null;
+
+  if (
+    id === null ||
+    entityRecord.entityType !== "ip" ||
+    typeof entityRecord.entityValue !== "string" ||
+    (entityRecord.source !== "manual" && entityRecord.source !== "automatic") ||
+    (entityRecord.attackEventId !== null && attackEventId === null) ||
+    (entityRecord.originKind !== "manual" &&
+      entityRecord.originKind !== "automatic" &&
+      entityRecord.originKind !== "event_disposition") ||
+    (entityRecord.expiresAt !== null && typeof entityRecord.expiresAt !== "string")
+  ) {
+    return undefined;
+  }
+
+  return {
+    id,
+    entityType: entityRecord.entityType,
+    entityValue: entityRecord.entityValue,
+    source: entityRecord.source,
+    attackEventId,
+    originKind: entityRecord.originKind,
+    expiresAt: entityRecord.expiresAt
+  };
+}
+
 export function extractNodeRequestContext(request: IncomingMessage): SiteRequestContext {
   const hostHeader = request.headers.host;
   const host = Array.isArray(hostHeader)
@@ -165,6 +225,7 @@ export function createSiteProtectionClient(
               action?: SiteProtectionAction;
               mode?: SiteProtectionMode;
               reasons?: string[];
+              matchedBlockedEntity?: unknown;
             };
           };
           error?: {
@@ -189,10 +250,13 @@ export function createSiteProtectionClient(
           return buildFailOpenDecision("platform_error:invalid_action");
         }
 
+        const matchedBlockedEntity = normalizeMatchedBlockedEntity(protection.matchedBlockedEntity);
+
         return {
           action: protection.action,
           mode: protection.mode === "protect" ? "protect" : "monitor",
           reasons: protection.reasons ?? [],
+          ...(matchedBlockedEntity ? { matchedBlockedEntity } : {}),
           monitored: protection.action === "monitor",
           failOpen: false
         };
@@ -240,7 +304,8 @@ export function createSiteProtectionClient(
               siteMiddleware: {
                 protectionAction: decision.action,
                 protectionMode: decision.mode,
-                protectionReasons: decision.reasons
+                protectionReasons: decision.reasons,
+                matchedBlockedEntity: decision.matchedBlockedEntity ?? null
               }
             }
           }),
@@ -303,7 +368,8 @@ export async function enforceNodeRequestProtection(
             message: "Request blocked by site security policy.",
             details: {
               reasons: decision.reasons,
-              mode: decision.mode
+              mode: decision.mode,
+              matchedBlockedEntity: decision.matchedBlockedEntity ?? null
             }
           }
         })

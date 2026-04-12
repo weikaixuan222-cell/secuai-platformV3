@@ -425,6 +425,132 @@ test("detection 主流程：处理 request_logs、生成 attack_events、更新 
   assert.ok(scenario.attackEvents.some((event) => event.eventType === "sql_injection"));
 });
 
+test("detection 幂等：同一 request_log 重复进入 detection 时，不应重复生成 attack_event 或自动处置记录", async () => {
+  const suffix = Date.now().toString();
+  const siteData = await createSite(
+    scenario.owner.token,
+    scenario.ownerTenant.id,
+    "Detection Idempotency Site",
+    `detection-idempotency-${suffix}.example.com`
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, siteData.site.id, {
+    mode: "monitor",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: true,
+    highRiskScoreThreshold: 70
+  });
+
+  const requestLogResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: "2026-04-02T16:00:00.000Z",
+      method: "GET",
+      host: siteData.site.domain,
+      path: "/login",
+      queryString: "id=1 UNION SELECT password FROM users",
+      statusCode: 200,
+      clientIp: "198.51.100.121",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(requestLogResponse.status, 201);
+
+  const firstDetectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(firstDetectionResponse.status, 200);
+  assert.equal(firstDetectionResponse.json.data.processedCount, 1);
+  assert.ok(firstDetectionResponse.json.data.eventCount >= 1);
+
+  const attackEventsAfterFirstRun = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsAfterFirstRun.status, 200);
+  assert.equal(attackEventsAfterFirstRun.json.data.items.length, 1);
+
+  const sqlInjectionEvent = attackEventsAfterFirstRun.json.data.items[0];
+
+  const blockedEntitiesAfterFirstRun = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities?attackEventId=${sqlInjectionEvent.id}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesAfterFirstRun.status, 200);
+  assert.equal(blockedEntitiesAfterFirstRun.json.data.items.length, 1);
+
+  await dbClient.query(
+    `
+      UPDATE request_logs
+      SET processed_for_detection = FALSE
+      WHERE id = $1
+    `,
+    [requestLogResponse.json.data.requestLog.id]
+  );
+
+  const secondDetectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(secondDetectionResponse.status, 200);
+  assert.equal(secondDetectionResponse.json.data.processedCount, 1);
+  assert.equal(secondDetectionResponse.json.data.eventCount, 0);
+
+  const attackEventsAfterSecondRun = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsAfterSecondRun.status, 200);
+  assert.equal(attackEventsAfterSecondRun.json.data.items.length, 1);
+  assert.equal(attackEventsAfterSecondRun.json.data.items[0].id, sqlInjectionEvent.id);
+
+  const blockedEntitiesAfterSecondRun = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesAfterSecondRun.status, 200);
+  const automaticBlockedEntitiesForIp = blockedEntitiesAfterSecondRun.json.data.items.filter(
+    (item) => item.entityValue === "198.51.100.121" && item.source === "automatic"
+  );
+  assert.equal(automaticBlockedEntitiesForIp.length, 1);
+  assert.equal(
+    automaticBlockedEntitiesForIp[0].attackEventId,
+    sqlInjectionEvent.id
+  );
+});
+
 test("AI 集成链路：成功写入 ai_risk_results，固定模型元数据，并保留 reasons 数组语义", async () => {
   assert.equal(scenario.detectionResponse.aiSuccessCount, 2);
   assert.equal(scenario.aiRiskResults.length, 2);
@@ -435,6 +561,961 @@ test("AI 集成链路：成功写入 ai_risk_results，固定模型元数据，�
     assert.equal(Array.isArray(item.factors?.reasons), true);
     assert.equal(Array.isArray(item.rawResponse?.reasons), true);
   }
+});
+
+test("AI 风险结果幂等：同一 attack_event 不应出现重复 ai_risk_results", async () => {
+  const attackEventDetailResponse = await apiRequest(
+    `/api/v1/attack-events/${scenario.sqlInjectionEventId}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventDetailResponse.status, 200);
+
+  const aiRiskResultsBeforeResponse = await apiRequest(
+    `/api/v1/ai-risk-results?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&attackEventId=${scenario.sqlInjectionEventId}&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(aiRiskResultsBeforeResponse.status, 200);
+  assert.equal(aiRiskResultsBeforeResponse.json.data.items.length, 1);
+  await assert.rejects(
+    dbClient.query(
+      `
+        INSERT INTO ai_risk_results (
+          tenant_id,
+          site_id,
+          request_log_id,
+          attack_event_id,
+          model_name,
+          model_version,
+          risk_score,
+          risk_level,
+          explanation,
+          factors,
+          raw_response
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `,
+      [
+        scenario.ownerTenant.id,
+        scenario.site.id,
+        Number(attackEventDetailResponse.json.data.requestLog.id),
+        Number(scenario.sqlInjectionEventId),
+        "heuristic-analyzer",
+        "v1",
+        93,
+        "critical",
+        "AI 幂等性测试重复写入。",
+        JSON.stringify({ reasons: ["AI 幂等性测试重复写入。"] }),
+        JSON.stringify({
+          modelName: "heuristic-analyzer",
+          modelVersion: "v1",
+          riskScore: 93,
+          riskLevel: "critical",
+          reasons: ["AI 幂等性测试重复写入。"]
+        })
+      ]
+    ),
+    (error) => error?.code === "23505"
+  );
+
+  const aiRiskResultsAfterResponse = await apiRequest(
+    `/api/v1/ai-risk-results?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&attackEventId=${scenario.sqlInjectionEventId}&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(aiRiskResultsAfterResponse.status, 200);
+  assert.equal(aiRiskResultsAfterResponse.json.data.items.length, 1);
+  assert.equal(
+    aiRiskResultsAfterResponse.json.data.items[0].id,
+    aiRiskResultsBeforeResponse.json.data.items[0].id
+  );
+});
+
+test("AI 高风险自动处置：满足站点策略阈值后，自动写入关联 blocked entity 并影响后续 protection/check", async () => {
+  const suffix = Date.now().toString();
+  const siteData = await createSite(
+    scenario.owner.token,
+    scenario.ownerTenant.id,
+    "Auto Block High Risk Site",
+    `auto-block-high-risk-${suffix}.example.com`
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, siteData.site.id, {
+    mode: "monitor",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: true,
+    highRiskScoreThreshold: 70
+  });
+
+  const requestLogResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: "2026-04-02T15:00:00.000Z",
+      method: "GET",
+      host: siteData.site.domain,
+      path: "/login",
+      queryString: "id=1 UNION SELECT password FROM users",
+      statusCode: 200,
+      clientIp: "198.51.100.120",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(requestLogResponse.status, 201);
+  assert.equal(requestLogResponse.json.data.protection.mode, "monitor");
+  assert.equal(requestLogResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    requestLogResponse.json.data.protection.reasons.includes("blocked_sql_injection")
+  );
+
+  const detectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(detectionResponse.status, 200);
+  assert.ok(detectionResponse.json.data.aiSuccessCount >= 1);
+
+  const attackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsResponse.status, 200);
+  assert.equal(attackEventsResponse.json.data.items.length, 1);
+
+  const sqlInjectionEvent = attackEventsResponse.json.data.items[0];
+
+  const blockedEntitiesResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities?attackEventId=${sqlInjectionEvent.id}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesResponse.status, 200);
+  assert.equal(blockedEntitiesResponse.json.data.items.length, 1);
+  assert.equal(blockedEntitiesResponse.json.data.items[0].entityValue, "198.51.100.120");
+  assert.equal(blockedEntitiesResponse.json.data.items[0].source, "automatic");
+  assert.equal(blockedEntitiesResponse.json.data.items[0].originKind, "event_disposition");
+  assert.equal(blockedEntitiesResponse.json.data.items[0].isActive, true);
+  assert.equal(
+    blockedEntitiesResponse.json.data.items[0].attackEventId,
+    sqlInjectionEvent.id
+  );
+
+  const attackEventDetailResponse = await apiRequest(`/api/v1/attack-events/${sqlInjectionEvent.id}`, {
+    token: scenario.owner.token
+  });
+
+  assert.equal(attackEventDetailResponse.status, 200);
+  assert.equal(attackEventDetailResponse.json.data.blockedEntities.length, 1);
+  assert.equal(
+    attackEventDetailResponse.json.data.activeBlockedEntity.id,
+    blockedEntitiesResponse.json.data.items[0].id
+  );
+  assert.equal(
+    attackEventDetailResponse.json.data.activeBlockedEntity.source,
+    "automatic"
+  );
+  assert.equal(
+    attackEventDetailResponse.json.data.dispositionSummary.status,
+    "active"
+  );
+
+  const protectionDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T15:01:00.000Z",
+    method: "GET",
+    host: siteData.site.domain,
+    path: "/checkout",
+    clientIp: "198.51.100.120",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(protectionDecision.mode, "monitor");
+  assert.equal(protectionDecision.action, "monitor");
+  assert.ok(protectionDecision.reasons.includes("blocked_ip"));
+  assert.equal(
+    protectionDecision.matchedBlockedEntity.id,
+    blockedEntitiesResponse.json.data.items[0].id
+  );
+  assert.equal(protectionDecision.matchedBlockedEntity.source, "automatic");
+  assert.equal(
+    protectionDecision.matchedBlockedEntity.attackEventId,
+    sqlInjectionEvent.id
+  );
+
+  const repeatedHighRiskRequestResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: "2026-04-02T15:02:00.000Z",
+      method: "GET",
+      host: siteData.site.domain,
+      path: "/admin/login",
+      queryString: "id=1 UNION SELECT email FROM users",
+      statusCode: 200,
+      clientIp: "198.51.100.120",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(repeatedHighRiskRequestResponse.status, 201);
+  assert.equal(repeatedHighRiskRequestResponse.json.data.protection.mode, "monitor");
+  assert.equal(repeatedHighRiskRequestResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    repeatedHighRiskRequestResponse.json.data.protection.reasons.includes(
+      "blocked_sql_injection"
+    )
+  );
+  assert.ok(
+    repeatedHighRiskRequestResponse.json.data.protection.reasons.includes("blocked_ip")
+  );
+  assert.equal(
+    repeatedHighRiskRequestResponse.json.data.protection.matchedBlockedEntity.id,
+    blockedEntitiesResponse.json.data.items[0].id
+  );
+
+  const repeatedDetectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(repeatedDetectionResponse.status, 200);
+  assert.ok(repeatedDetectionResponse.json.data.eventCount >= 1);
+  assert.ok(repeatedDetectionResponse.json.data.aiSuccessCount >= 1);
+
+  const repeatedAttackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(repeatedAttackEventsResponse.status, 200);
+  const repeatedSqlInjectionEvent = repeatedAttackEventsResponse.json.data.items.find(
+    (item) =>
+      String(item.requestLogId) === String(repeatedHighRiskRequestResponse.json.data.requestLog.id)
+  );
+  assert.ok(repeatedSqlInjectionEvent);
+
+  const blockedEntitiesAfterRepeatResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesAfterRepeatResponse.status, 200);
+  const automaticBlockedEntitiesForIp = blockedEntitiesAfterRepeatResponse.json.data.items.filter(
+    (item) => item.entityValue === "198.51.100.120" && item.source === "automatic"
+  );
+  assert.equal(automaticBlockedEntitiesForIp.length, 1);
+  assert.equal(automaticBlockedEntitiesForIp[0].id, blockedEntitiesResponse.json.data.items[0].id);
+  assert.equal(automaticBlockedEntitiesForIp[0].attackEventId, sqlInjectionEvent.id);
+
+  const repeatedEventLinkedBlockedEntitiesResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities?attackEventId=${repeatedSqlInjectionEvent.id}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(repeatedEventLinkedBlockedEntitiesResponse.status, 200);
+  assert.equal(repeatedEventLinkedBlockedEntitiesResponse.json.data.items.length, 0);
+
+  const deleteAutoBlockedEntityResponse = await apiRequest(
+    `/api/v1/blocked-entities/${blockedEntitiesResponse.json.data.items[0].id}`,
+    {
+      method: "DELETE",
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(deleteAutoBlockedEntityResponse.status, 200);
+  assert.equal(deleteAutoBlockedEntityResponse.json.data.deleted, true);
+  assert.equal(
+    deleteAutoBlockedEntityResponse.json.data.blockedEntity.id,
+    blockedEntitiesResponse.json.data.items[0].id
+  );
+
+  const blockedEntitiesAfterAutoDeleteResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesAfterAutoDeleteResponse.status, 200);
+  assert.deepEqual(blockedEntitiesAfterAutoDeleteResponse.json.data.items, []);
+
+  const recreatedHighRiskRequestResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: "2026-04-02T15:02:30.000Z",
+      method: "GET",
+      host: siteData.site.domain,
+      path: "/support/login",
+      queryString: "id=1 UNION SELECT token FROM sessions",
+      statusCode: 200,
+      clientIp: "198.51.100.120",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(recreatedHighRiskRequestResponse.status, 201);
+  assert.equal(recreatedHighRiskRequestResponse.json.data.protection.mode, "monitor");
+  assert.equal(recreatedHighRiskRequestResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    recreatedHighRiskRequestResponse.json.data.protection.reasons.includes(
+      "blocked_sql_injection"
+    )
+  );
+  assert.equal(
+    recreatedHighRiskRequestResponse.json.data.protection.matchedBlockedEntity ?? null,
+    null
+  );
+
+  const recreatedDetectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(recreatedDetectionResponse.status, 200);
+  assert.ok(recreatedDetectionResponse.json.data.eventCount >= 1);
+  assert.ok(recreatedDetectionResponse.json.data.aiSuccessCount >= 1);
+
+  const attackEventsAfterAutoRecreateResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsAfterAutoRecreateResponse.status, 200);
+  const recreatedSqlInjectionEvent = attackEventsAfterAutoRecreateResponse.json.data.items.find(
+    (item) =>
+      String(item.requestLogId) ===
+      String(recreatedHighRiskRequestResponse.json.data.requestLog.id)
+  );
+  assert.ok(
+    recreatedSqlInjectionEvent,
+    "Expected a new sql_injection event after recreating auto disposition."
+  );
+
+  const blockedEntitiesAfterAutoRecreateResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities?attackEventId=${recreatedSqlInjectionEvent.id}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesAfterAutoRecreateResponse.status, 200);
+  assert.equal(blockedEntitiesAfterAutoRecreateResponse.json.data.items.length, 1);
+  assert.equal(
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].entityValue,
+    "198.51.100.120"
+  );
+  assert.equal(
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].source,
+    "automatic"
+  );
+  assert.equal(
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].originKind,
+    "event_disposition"
+  );
+  assert.equal(
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].isActive,
+    true
+  );
+  assert.equal(
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].attackEventId,
+    recreatedSqlInjectionEvent.id
+  );
+  assert.notEqual(
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].id,
+    blockedEntitiesResponse.json.data.items[0].id
+  );
+
+  const recreatedProtectionDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T15:02:31.000Z",
+    method: "GET",
+    host: siteData.site.domain,
+    path: "/checkout",
+    clientIp: "198.51.100.120",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(recreatedProtectionDecision.mode, "monitor");
+  assert.equal(recreatedProtectionDecision.action, "monitor");
+  assert.ok(recreatedProtectionDecision.reasons.includes("blocked_ip"));
+  assert.equal(
+    recreatedProtectionDecision.matchedBlockedEntity.id,
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].id
+  );
+  assert.equal(recreatedProtectionDecision.matchedBlockedEntity.source, "automatic");
+  assert.equal(
+    recreatedProtectionDecision.matchedBlockedEntity.attackEventId,
+    recreatedSqlInjectionEvent.id
+  );
+
+  await dbClient.query(
+    `
+      UPDATE blocked_entities
+      SET expires_at = NOW() + INTERVAL '1 second'
+      WHERE id = $1
+    `,
+    [blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].id]
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  const expiredOccurredAt = new Date().toISOString();
+
+  const expiredAutoDispositionProtectionDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: expiredOccurredAt,
+    method: "GET",
+    host: siteData.site.domain,
+    path: "/checkout",
+    clientIp: "198.51.100.120",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(expiredAutoDispositionProtectionDecision.mode, "monitor");
+  assert.equal(expiredAutoDispositionProtectionDecision.action, "allow");
+  assert.deepEqual(expiredAutoDispositionProtectionDecision.reasons, []);
+  assert.equal(
+    expiredAutoDispositionProtectionDecision.matchedBlockedEntity ?? null,
+    null
+  );
+
+  const postExpiryRequestOccurredAt = new Date(Date.now() + 1_000).toISOString();
+
+  const postExpiryHighRiskRequestResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: postExpiryRequestOccurredAt,
+      method: "GET",
+      host: siteData.site.domain,
+      path: "/portal/login",
+      queryString: "id=1 UNION SELECT password_hash FROM admins",
+      statusCode: 200,
+      clientIp: "198.51.100.120",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(postExpiryHighRiskRequestResponse.status, 201);
+  assert.equal(postExpiryHighRiskRequestResponse.json.data.protection.mode, "monitor");
+  assert.equal(postExpiryHighRiskRequestResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    postExpiryHighRiskRequestResponse.json.data.protection.reasons.includes(
+      "blocked_sql_injection"
+    )
+  );
+  assert.equal(
+    postExpiryHighRiskRequestResponse.json.data.protection.matchedBlockedEntity ?? null,
+    null
+  );
+
+  const postExpiryDetectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(postExpiryDetectionResponse.status, 200);
+  assert.ok(postExpiryDetectionResponse.json.data.eventCount >= 1);
+  assert.ok(postExpiryDetectionResponse.json.data.aiSuccessCount >= 1);
+
+  const attackEventsAfterExpiryResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsAfterExpiryResponse.status, 200);
+  const recreatedAfterExpiryEvent = attackEventsAfterExpiryResponse.json.data.items.find(
+    (item) =>
+      String(item.requestLogId) ===
+      String(postExpiryHighRiskRequestResponse.json.data.requestLog.id)
+  );
+  assert.ok(
+    recreatedAfterExpiryEvent,
+    "Expected a new sql_injection event after the active automatic disposition expired."
+  );
+
+  const blockedEntitiesAfterExpiryRecreateResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesAfterExpiryRecreateResponse.status, 200);
+  const automaticBlockedEntitiesAfterExpiry =
+    blockedEntitiesAfterExpiryRecreateResponse.json.data.items.filter(
+      (item) => item.entityValue === "198.51.100.120" && item.source === "automatic"
+    );
+  assert.equal(automaticBlockedEntitiesAfterExpiry.length, 2);
+
+  const activeAutomaticBlockedEntitiesAfterExpiry =
+    automaticBlockedEntitiesAfterExpiry.filter((item) => item.isActive);
+  assert.equal(activeAutomaticBlockedEntitiesAfterExpiry.length, 1);
+  assert.equal(
+    activeAutomaticBlockedEntitiesAfterExpiry[0].attackEventId,
+    recreatedAfterExpiryEvent.id
+  );
+  assert.notEqual(
+    activeAutomaticBlockedEntitiesAfterExpiry[0].id,
+    blockedEntitiesAfterAutoRecreateResponse.json.data.items[0].id
+  );
+
+  const postExpiryProtectionOccurredAt = new Date(Date.now() + 2_000).toISOString();
+
+  const postExpiryRecreatedProtectionDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: postExpiryProtectionOccurredAt,
+    method: "GET",
+    host: siteData.site.domain,
+    path: "/checkout",
+    clientIp: "198.51.100.120",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(postExpiryRecreatedProtectionDecision.mode, "monitor");
+  assert.equal(postExpiryRecreatedProtectionDecision.action, "monitor");
+  assert.ok(postExpiryRecreatedProtectionDecision.reasons.includes("blocked_ip"));
+  assert.equal(
+    postExpiryRecreatedProtectionDecision.matchedBlockedEntity.id,
+    activeAutomaticBlockedEntitiesAfterExpiry[0].id
+  );
+  assert.equal(
+    postExpiryRecreatedProtectionDecision.matchedBlockedEntity.attackEventId,
+    recreatedAfterExpiryEvent.id
+  );
+
+  const belowThresholdSiteData = await createSite(
+    scenario.owner.token,
+    scenario.ownerTenant.id,
+    "Auto Block High Risk Threshold Guard Site",
+    `auto-block-high-risk-threshold-${suffix}.example.com`
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, belowThresholdSiteData.site.id, {
+    mode: "monitor",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: true,
+    highRiskScoreThreshold: 95
+  });
+
+  const belowThresholdRequestResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": belowThresholdSiteData.ingestionKey
+    },
+    body: {
+      siteId: belowThresholdSiteData.site.id,
+      occurredAt: "2026-04-02T15:03:00.000Z",
+      method: "GET",
+      host: belowThresholdSiteData.site.domain,
+      path: "/login",
+      queryString: "id=1 UNION SELECT password FROM users",
+      statusCode: 200,
+      clientIp: "198.51.100.121",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(belowThresholdRequestResponse.status, 201);
+  assert.equal(belowThresholdRequestResponse.json.data.protection.mode, "monitor");
+  assert.equal(belowThresholdRequestResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    belowThresholdRequestResponse.json.data.protection.reasons.includes("blocked_sql_injection")
+  );
+  assert.equal(
+    belowThresholdRequestResponse.json.data.protection.matchedBlockedEntity ?? null,
+    null
+  );
+
+  const belowThresholdDetectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(belowThresholdDetectionResponse.status, 200);
+  assert.ok(belowThresholdDetectionResponse.json.data.eventCount >= 1);
+  assert.ok(belowThresholdDetectionResponse.json.data.aiSuccessCount >= 1);
+
+  const belowThresholdAttackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${belowThresholdSiteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(belowThresholdAttackEventsResponse.status, 200);
+  assert.equal(belowThresholdAttackEventsResponse.json.data.items.length, 1);
+
+  const belowThresholdBlockedEntitiesResponse = await apiRequest(
+    `/api/v1/sites/${belowThresholdSiteData.site.id}/blocked-entities`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(belowThresholdBlockedEntitiesResponse.status, 200);
+  assert.deepEqual(belowThresholdBlockedEntitiesResponse.json.data.items, []);
+
+  const belowThresholdProtectionDecision = await protectionCheck(
+    belowThresholdSiteData.ingestionKey,
+    {
+      siteId: belowThresholdSiteData.site.id,
+      occurredAt: "2026-04-02T15:04:00.000Z",
+      method: "GET",
+      host: belowThresholdSiteData.site.domain,
+      path: "/checkout",
+      clientIp: "198.51.100.121",
+      userAgent: "Mozilla/5.0"
+    }
+  );
+
+  assert.equal(belowThresholdProtectionDecision.mode, "monitor");
+  assert.equal(belowThresholdProtectionDecision.action, "allow");
+  assert.deepEqual(belowThresholdProtectionDecision.reasons, []);
+  assert.equal(belowThresholdProtectionDecision.matchedBlockedEntity ?? null, null);
+
+  const existingBlockedSiteData = await createSite(
+    scenario.owner.token,
+    scenario.ownerTenant.id,
+    "Auto Block High Risk Existing Block Site",
+    `auto-block-high-risk-existing-block-${suffix}.example.com`
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, existingBlockedSiteData.site.id, {
+    mode: "monitor",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: true,
+    highRiskScoreThreshold: 70
+  });
+
+  const existingManualBlockedEntityResponse = await apiRequest(
+    `/api/v1/sites/${existingBlockedSiteData.site.id}/blocked-entities`,
+    {
+      method: "POST",
+      token: scenario.owner.token,
+      body: {
+        entityType: "ip",
+        entityValue: "198.51.100.122",
+        reason: "Auto-block guard existing manual block",
+        source: "manual"
+      }
+    }
+  );
+
+  assert.equal(existingManualBlockedEntityResponse.status, 201);
+  const existingManualBlockedEntity = existingManualBlockedEntityResponse.json.data.blockedEntity;
+
+  const existingBlockedRequestResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": existingBlockedSiteData.ingestionKey
+    },
+    body: {
+      siteId: existingBlockedSiteData.site.id,
+      occurredAt: "2026-04-02T15:05:00.000Z",
+      method: "GET",
+      host: existingBlockedSiteData.site.domain,
+      path: "/login",
+      queryString: "id=1 UNION SELECT password FROM users",
+      statusCode: 200,
+      clientIp: "198.51.100.122",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(existingBlockedRequestResponse.status, 201);
+  assert.equal(existingBlockedRequestResponse.json.data.protection.mode, "monitor");
+  assert.equal(existingBlockedRequestResponse.json.data.protection.action, "monitor");
+  assert.ok(
+    existingBlockedRequestResponse.json.data.protection.reasons.includes("blocked_ip")
+  );
+  assert.ok(
+    existingBlockedRequestResponse.json.data.protection.reasons.includes(
+      "blocked_sql_injection"
+    )
+  );
+  assert.equal(
+    existingBlockedRequestResponse.json.data.protection.matchedBlockedEntity.id,
+    existingManualBlockedEntity.id
+  );
+  assert.equal(
+    existingBlockedRequestResponse.json.data.protection.matchedBlockedEntity.source,
+    "manual"
+  );
+
+  const existingBlockedDetectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(existingBlockedDetectionResponse.status, 200);
+  assert.ok(existingBlockedDetectionResponse.json.data.eventCount >= 1);
+  assert.ok(existingBlockedDetectionResponse.json.data.aiSuccessCount >= 1);
+
+  const existingBlockedEntitiesResponse = await apiRequest(
+    `/api/v1/sites/${existingBlockedSiteData.site.id}/blocked-entities`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(existingBlockedEntitiesResponse.status, 200);
+  const existingBlockedEntitiesForIp = existingBlockedEntitiesResponse.json.data.items.filter(
+    (item) => item.entityValue === "198.51.100.122"
+  );
+  const automaticBlockedEntitiesForExistingIp = existingBlockedEntitiesForIp.filter(
+    (item) => item.source === "automatic"
+  );
+  assert.equal(existingBlockedEntitiesForIp.length, 1);
+  assert.equal(automaticBlockedEntitiesForExistingIp.length, 0);
+  assert.equal(existingBlockedEntitiesForIp[0].id, existingManualBlockedEntity.id);
+  assert.equal(existingBlockedEntitiesForIp[0].source, "manual");
+
+  const existingBlockedProtectionDecision = await protectionCheck(
+    existingBlockedSiteData.ingestionKey,
+    {
+      siteId: existingBlockedSiteData.site.id,
+      occurredAt: "2026-04-02T15:06:00.000Z",
+      method: "GET",
+      host: existingBlockedSiteData.site.domain,
+      path: "/checkout",
+      clientIp: "198.51.100.122",
+      userAgent: "Mozilla/5.0"
+    }
+  );
+
+  assert.equal(existingBlockedProtectionDecision.mode, "monitor");
+  assert.equal(existingBlockedProtectionDecision.action, "monitor");
+  assert.ok(existingBlockedProtectionDecision.reasons.includes("blocked_ip"));
+  assert.equal(
+    existingBlockedProtectionDecision.matchedBlockedEntity.id,
+    existingManualBlockedEntity.id
+  );
+  assert.equal(existingBlockedProtectionDecision.matchedBlockedEntity.source, "manual");
+});
+
+test("自动 blocked entity 幂等：重复创建同一活动自动处置时，不应长出第二条活动记录", async () => {
+  const suffix = Date.now().toString();
+  const siteData = await createSite(
+    scenario.owner.token,
+    scenario.ownerTenant.id,
+    "Automatic Blocked Entity Idempotency Site",
+    `automatic-blocked-entity-idempotency-${suffix}.example.com`
+  );
+
+  await updateSecurityPolicy(scenario.owner.token, siteData.site.id, {
+    mode: "monitor",
+    blockSqlInjection: true,
+    blockXss: true,
+    blockSuspiciousUserAgent: true,
+    enableRateLimit: true,
+    rateLimitThreshold: 100,
+    autoBlockHighRisk: false,
+    highRiskScoreThreshold: 70
+  });
+
+  const requestLogResponse = await apiRequest("/api/v1/request-logs", {
+    method: "POST",
+    headers: {
+      "x-site-ingestion-key": siteData.ingestionKey
+    },
+    body: {
+      siteId: siteData.site.id,
+      occurredAt: "2026-04-02T15:07:00.000Z",
+      method: "GET",
+      host: siteData.site.domain,
+      path: "/login",
+      queryString: "id=1 UNION SELECT password FROM users",
+      statusCode: 200,
+      clientIp: "198.51.100.123",
+      userAgent: "Mozilla/5.0"
+    }
+  });
+
+  assert.equal(requestLogResponse.status, 201);
+
+  const detectionResponse = await apiRequest("/api/v1/detection/run", {
+    method: "POST",
+    token: scenario.owner.token,
+    body: {
+      tenantId: scenario.ownerTenant.id,
+      limit: 50
+    }
+  });
+
+  assert.equal(detectionResponse.status, 200);
+  assert.ok(detectionResponse.json.data.eventCount >= 1);
+
+  const attackEventsResponse = await apiRequest(
+    `/api/v1/attack-events?tenantId=${scenario.ownerTenant.id}&siteId=${siteData.site.id}&eventType=sql_injection&limit=20`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventsResponse.status, 200);
+  assert.equal(attackEventsResponse.json.data.items.length, 1);
+
+  const sqlInjectionEvent = attackEventsResponse.json.data.items[0];
+  const blockedEntityBody = {
+    entityType: "ip",
+    entityValue: "198.51.100.123",
+    reason: "Automatic blocked entity idempotency guard",
+    source: "automatic",
+    attackEventId: Number(sqlInjectionEvent.id)
+  };
+
+  const [firstCreateResponse, secondCreateResponse] = await Promise.all([
+    apiRequest(`/api/v1/sites/${siteData.site.id}/blocked-entities`, {
+      method: "POST",
+      token: scenario.owner.token,
+      body: blockedEntityBody
+    }),
+    apiRequest(`/api/v1/sites/${siteData.site.id}/blocked-entities`, {
+      method: "POST",
+      token: scenario.owner.token,
+      body: blockedEntityBody
+    })
+  ]);
+
+  assert.equal(firstCreateResponse.status, 201);
+  assert.equal(secondCreateResponse.status, 201);
+  assert.equal(
+    firstCreateResponse.json.data.blockedEntity.id,
+    secondCreateResponse.json.data.blockedEntity.id
+  );
+
+  const blockedEntitiesResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(blockedEntitiesResponse.status, 200);
+  const automaticBlockedEntitiesForIp = blockedEntitiesResponse.json.data.items.filter(
+    (item) => item.entityValue === "198.51.100.123" && item.source === "automatic"
+  );
+  assert.equal(automaticBlockedEntitiesForIp.length, 1);
+  assert.equal(
+    automaticBlockedEntitiesForIp[0].id,
+    firstCreateResponse.json.data.blockedEntity.id
+  );
+  assert.equal(
+    Number(automaticBlockedEntitiesForIp[0].attackEventId),
+    Number(sqlInjectionEvent.id)
+  );
+  assert.equal(automaticBlockedEntitiesForIp[0].isActive, true);
+
+  const linkedBlockedEntitiesResponse = await apiRequest(
+    `/api/v1/sites/${siteData.site.id}/blocked-entities?attackEventId=${sqlInjectionEvent.id}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(linkedBlockedEntitiesResponse.status, 200);
+  assert.equal(linkedBlockedEntitiesResponse.json.data.items.length, 1);
+  assert.equal(
+    linkedBlockedEntitiesResponse.json.data.items[0].id,
+    firstCreateResponse.json.data.blockedEntity.id
+  );
+
+  const protectionDecision = await protectionCheck(siteData.ingestionKey, {
+    siteId: siteData.site.id,
+    occurredAt: "2026-04-02T15:08:00.000Z",
+    method: "GET",
+    host: siteData.site.domain,
+    path: "/checkout",
+    clientIp: "198.51.100.123",
+    userAgent: "Mozilla/5.0"
+  });
+
+  assert.equal(protectionDecision.mode, "monitor");
+  assert.equal(protectionDecision.action, "monitor");
+  assert.ok(protectionDecision.reasons.includes("blocked_ip"));
+  assert.equal(
+    protectionDecision.matchedBlockedEntity.id,
+    firstCreateResponse.json.data.blockedEntity.id
+  );
+  assert.equal(protectionDecision.matchedBlockedEntity.source, "automatic");
+  assert.equal(
+    Number(protectionDecision.matchedBlockedEntity.attackEventId),
+    Number(sqlInjectionEvent.id)
+  );
 });
 
 test("核心查询接口：GET /request-logs, GET /ai-risk-results, GET /attack-events/:id", async () => {
@@ -510,6 +1591,126 @@ test("核心查询接口：GET /request-logs, GET /ai-risk-results, GET /attack-
     Array.isArray(attackEventDetailResponse.json.data.aiRiskResult.factors?.reasons),
     true
   );
+  assert.deepEqual(attackEventDetailResponse.json.data.blockedEntities, []);
+  assert.equal(attackEventDetailResponse.json.data.activeBlockedEntity ?? null, null);
+  assert.deepEqual(
+    attackEventDetailResponse.json.data.protectionEnforcement,
+    attackEventDetailResponse.json.data.attackEvent.details.protectionEnforcement
+  );
+  assert.deepEqual(attackEventDetailResponse.json.data.dispositionSummary, {
+    status: "none",
+    blockedEntityCount: 0,
+    activeBlockedEntityId: null,
+    activeEntityType: null,
+    activeEntityValue: null,
+    activeSource: null,
+    activeOriginKind: null,
+    activeAttackEventId: null
+  });
+
+  const createDispositionBlockedEntityResponse = await apiRequest(
+    `/api/v1/sites/${scenario.site.id}/blocked-entities`,
+    {
+      method: "POST",
+      token: scenario.owner.token,
+      body: {
+        entityType: "ip",
+        entityValue: "203.0.113.20",
+        reason: "Integration attack event disposition",
+        source: "manual",
+        attackEventId: Number(scenario.sqlInjectionEventId)
+      }
+    }
+  );
+
+  assert.equal(createDispositionBlockedEntityResponse.status, 201);
+
+  const attackEventDetailWithDispositionResponse = await apiRequest(
+    `/api/v1/attack-events/${scenario.sqlInjectionEventId}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventDetailWithDispositionResponse.status, 200);
+  assert.equal(attackEventDetailWithDispositionResponse.json.data.blockedEntities.length, 1);
+  assert.equal(
+    attackEventDetailWithDispositionResponse.json.data.blockedEntities[0].id,
+    createDispositionBlockedEntityResponse.json.data.blockedEntity.id
+  );
+  assert.equal(
+    attackEventDetailWithDispositionResponse.json.data.blockedEntities[0].attackEventId,
+    scenario.sqlInjectionEventId
+  );
+  assert.equal(
+    attackEventDetailWithDispositionResponse.json.data.blockedEntities[0].originKind,
+    "event_disposition"
+  );
+  assert.equal(
+    attackEventDetailWithDispositionResponse.json.data.blockedEntities[0].isActive,
+    true
+  );
+  assert.equal(
+    attackEventDetailWithDispositionResponse.json.data.activeBlockedEntity.id,
+    createDispositionBlockedEntityResponse.json.data.blockedEntity.id
+  );
+  assert.equal(
+    attackEventDetailWithDispositionResponse.json.data.activeBlockedEntity.originKind,
+    "event_disposition"
+  );
+  assert.equal(
+    attackEventDetailWithDispositionResponse.json.data.activeBlockedEntity.isActive,
+    true
+  );
+  assert.deepEqual(
+    attackEventDetailWithDispositionResponse.json.data.protectionEnforcement,
+    attackEventDetailWithDispositionResponse.json.data.attackEvent.details.protectionEnforcement
+  );
+  assert.deepEqual(attackEventDetailWithDispositionResponse.json.data.dispositionSummary, {
+    status: "active",
+    blockedEntityCount: 1,
+    activeBlockedEntityId: createDispositionBlockedEntityResponse.json.data.blockedEntity.id,
+    activeEntityType: "ip",
+    activeEntityValue: "203.0.113.20",
+    activeSource: "manual",
+    activeOriginKind: "event_disposition",
+    activeAttackEventId: Number(scenario.sqlInjectionEventId)
+  });
+
+  const deleteDispositionBlockedEntityResponse = await apiRequest(
+    `/api/v1/blocked-entities/${createDispositionBlockedEntityResponse.json.data.blockedEntity.id}`,
+    {
+      method: "DELETE",
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(deleteDispositionBlockedEntityResponse.status, 200);
+
+  const attackEventDetailAfterDispositionDeleteResponse = await apiRequest(
+    `/api/v1/attack-events/${scenario.sqlInjectionEventId}`,
+    {
+      token: scenario.owner.token
+    }
+  );
+
+  assert.equal(attackEventDetailAfterDispositionDeleteResponse.status, 200);
+  assert.deepEqual(attackEventDetailAfterDispositionDeleteResponse.json.data.blockedEntities, []);
+  assert.equal(attackEventDetailAfterDispositionDeleteResponse.json.data.activeBlockedEntity ?? null, null);
+  assert.deepEqual(
+    attackEventDetailAfterDispositionDeleteResponse.json.data.protectionEnforcement,
+    attackEventDetailAfterDispositionDeleteResponse.json.data.attackEvent.details.protectionEnforcement
+  );
+  assert.deepEqual(attackEventDetailAfterDispositionDeleteResponse.json.data.dispositionSummary, {
+    status: "none",
+    blockedEntityCount: 0,
+    activeBlockedEntityId: null,
+    activeEntityType: null,
+    activeEntityValue: null,
+    activeSource: null,
+    activeOriginKind: null,
+    activeAttackEventId: null
+  });
 
   const filteredAiRiskResultsByEventResponse = await apiRequest(
     `/api/v1/ai-risk-results?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.site.id}&attackEventId=${scenario.sqlInjectionEventId}&requestLogId=${attackEventDetailResponse.json.data.requestLog.id}&limit=20`,
@@ -841,11 +2042,19 @@ test("request log 前置防护执行：monitor 模式只标记不拦截，protec
     }
   });
 
-  assert.equal(monitorResponse.status, 201);
-  assert.equal(monitorResponse.json.data.protection.mode, "monitor");
-  assert.equal(monitorResponse.json.data.protection.action, "monitor");
-  assert.ok(monitorResponse.json.data.protection.reasons.includes("blocked_ip"));
-  assert.ok(monitorResponse.json.data.protection.reasons.includes("blocked_sql_injection"));
+    assert.equal(monitorResponse.status, 201);
+    assert.equal(monitorResponse.json.data.protection.mode, "monitor");
+    assert.equal(monitorResponse.json.data.protection.action, "monitor");
+    assert.ok(monitorResponse.json.data.protection.reasons.includes("blocked_ip"));
+    assert.ok(monitorResponse.json.data.protection.reasons.includes("blocked_sql_injection"));
+    assert.equal(
+      monitorResponse.json.data.protection.matchedBlockedEntity.id,
+      createBlockedIpResponse.json.data.blockedEntity.id
+    );
+    assert.equal(
+      monitorResponse.json.data.protection.matchedBlockedEntity.originKind,
+      "manual"
+    );
 
   const monitorLogQueryResponse = await apiRequest(
     `/api/v1/request-logs?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.protectionSite.id}&clientIp=198.51.100.77&limit=20`,
@@ -885,9 +2094,17 @@ test("request log 前置防护执行：monitor 模式只标记不拦截，protec
     }
   });
 
-  assert.equal(blockedIpResponse.status, 403);
-  assert.equal(blockedIpResponse.json.error.code, "PROTECTION_BLOCKED");
-  assert.ok(blockedIpResponse.json.error.details.reasons.includes("blocked_ip"));
+    assert.equal(blockedIpResponse.status, 403);
+    assert.equal(blockedIpResponse.json.error.code, "PROTECTION_BLOCKED");
+    assert.ok(blockedIpResponse.json.error.details.reasons.includes("blocked_ip"));
+    assert.equal(
+      blockedIpResponse.json.error.details.matchedBlockedEntity.id,
+      createBlockedIpResponse.json.data.blockedEntity.id
+    );
+    assert.equal(
+      blockedIpResponse.json.error.details.matchedBlockedEntity.originKind,
+      "manual"
+    );
 
   const blockedIpLogQueryResponse = await apiRequest(
     `/api/v1/request-logs?tenantId=${scenario.ownerTenant.id}&siteId=${scenario.protectionSite.id}&clientIp=198.51.100.77&limit=20`,

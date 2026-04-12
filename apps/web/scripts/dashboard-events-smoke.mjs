@@ -2,12 +2,13 @@ import {
   cleanupBrowser,
   launchBrowser,
   requireWebSocket,
+  resolveChromeDebugPort,
   waitForHttpOk
 } from './smoke-helpers.mjs';
 
 const API_BASE_URL = process.env.SECUAI_API_BASE_URL || 'http://127.0.0.1:3201';
 const WEB_BASE_URL = process.env.SECUAI_WEB_BASE_URL || 'http://127.0.0.1:3200';
-const CHROME_DEBUG_PORT = Number(process.env.SECUAI_CHROME_DEBUG_PORT || 9222);
+const DEFAULT_CHROME_DEBUG_PORT = 9222;
 const STRICT_MODE =
   process.argv.includes('--strict') || process.env.SECUAI_SMOKE_STRICT === '1';
 const DETAIL_ROUTE_ERROR_PROBE_ID = `detail-route-probe-${Date.now()}`;
@@ -205,8 +206,8 @@ async function bootstrapSmokeData() {
   };
 }
 
-async function openCdpTarget() {
-  const response = await fetch(`http://127.0.0.1:${CHROME_DEBUG_PORT}/json/new?about:blank`, {
+async function openCdpTarget(chromeDebugPort) {
+  const response = await fetch(`http://127.0.0.1:${chromeDebugPort}/json/new?about:blank`, {
     method: 'PUT'
   });
 
@@ -366,8 +367,8 @@ async function createCdpClient(wsUrl) {
   };
 }
 
-async function runBrowserSmoke(context) {
-  const client = await createCdpClient(await openCdpTarget());
+async function runBrowserSmoke(context, chromeDebugPort) {
+  const client = await createCdpClient(await openCdpTarget(chromeDebugPort));
   await client.init();
 
   await client.send('Page.addScriptToEvaluateOnNewDocument', {
@@ -439,6 +440,34 @@ async function runBrowserSmoke(context) {
       backHref: backLink?.getAttribute('href') || ''
     };
   })()`);
+
+  // BEGIN UI BLOCK IP TEST
+  await client.waitFor(
+    `document.querySelector('[data-testid="event-detail-block-ip-button"]')?.textContent?.includes('封禁该 IP')`
+  );
+  await client.evaluate(`document.querySelector('[data-testid="event-detail-block-ip-button"]')?.click()`);
+  await client.waitFor(
+    `document.querySelector('[data-testid="event-detail-block-ip-feedback"]')?.textContent?.includes('已加入当前站点封禁名单') && document.querySelector('[data-testid="event-detail-block-ip-button"]')?.disabled === true`
+  );
+
+  const blockIpActionState = await client.evaluate(`(() => {
+    const feedback = document.querySelector('[data-testid="event-detail-block-ip-feedback"]');
+    const feedbackLink = document.querySelector('[data-testid="event-detail-block-ip-feedback-link"]');
+    const associatedBlocks = document.querySelector('[data-testid="event-detail-associated-blocks"]');
+    const associatedEvent = document.querySelector('[data-testid="event-detail-associated-event"]');
+    const associatedEventLink = document.querySelector('[data-testid="event-detail-associated-event-link"]');
+    const protectionTrace = document.querySelector('[data-testid="event-detail-protection-trace"]');
+
+    return {
+      feedbackText: feedback?.textContent || '',
+      feedbackLinkHref: feedbackLink?.getAttribute('href') || '',
+      associatedBlocksText: associatedBlocks?.textContent || '',
+      associatedEventText: associatedEvent?.textContent || '',
+      associatedEventLinkHref: associatedEventLink?.getAttribute('href') || '',
+      protectionTraceText: protectionTrace?.textContent || ''
+    };
+  })()`);
+  // END UI BLOCK IP TEST
 
   await client.send('Page.navigate', {
     url: `${WEB_BASE_URL}${firstDetailProbePath}`
@@ -526,7 +555,7 @@ async function runBrowserSmoke(context) {
     `document.querySelector('[data-testid="event-detail-back-link"]')?.click()`
   );
   await client.waitFor(
-    `location.pathname === '/dashboard/events' && new URLSearchParams(location.search).get('siteId') === '${context.firstSiteId}' && new URLSearchParams(location.search).get('eventType') === 'sql_injection'`
+    `location.pathname === '/dashboard/events' && new URLSearchParams(location.search).get('siteId') === '${context.firstSiteId}' && new URLSearchParams(location.search).get('eventType') === 'sql_injection' && Array.from(document.querySelectorAll('select'))[0]?.value === '${context.firstSiteId}' && Array.from(document.querySelectorAll('select'))[1]?.value === 'sql_injection'`
   );
 
   const invalidDetailReturnState = await client.evaluate(`(() => {
@@ -611,6 +640,7 @@ async function runBrowserSmoke(context) {
   return {
     firstListState,
     detailState,
+    blockIpActionState,
     detailRouteErrorState,
     recoveredDetailState,
     returnedListState,
@@ -649,6 +679,15 @@ function assertSmokeState(result, context) {
       `/dashboard/events?siteId=${encodeURIComponent(context.firstSiteId)}&eventType=sql_injection`
   ) {
     throw new Error(`Detail return-query smoke failed: ${JSON.stringify(result.detailState)}`);
+  }
+
+  if (
+    !result.blockIpActionState.feedbackText.includes('已加入当前站点封禁名单') ||
+    result.blockIpActionState.feedbackLinkHref !== `/dashboard/policies?siteId=${context.firstSiteId}` ||
+    !result.blockIpActionState.associatedBlocksText.includes('事件详情页快速封禁') ||
+    !result.blockIpActionState.associatedBlocksText.includes('生效中')
+  ) {
+    throw new Error(`Block IP traceability smoke failed: ${JSON.stringify(result.blockIpActionState)}`);
   }
 
   if (
@@ -745,6 +784,26 @@ function assertSmokeState(result, context) {
   ) {
     throw new Error(`Dashboard card query-preservation smoke failed: ${JSON.stringify(result.dashboardDetailState)}`);
   }
+
+  if (
+    !result.blockIpActionState.associatedBlocksText.includes(
+      `关联事件 #${context.firstAttackEventId}`
+    )
+  ) {
+    throw new Error(
+      `Block IP related-event summary smoke failed: ${JSON.stringify(result.blockIpActionState)}`
+    );
+  }
+
+  if (
+    result.blockIpActionState.associatedEventText !==
+      `关联事件 #${context.firstAttackEventId}（当前事件）` ||
+    result.blockIpActionState.associatedEventLinkHref !== ''
+  ) {
+    throw new Error(
+      `Block IP related-event node smoke failed: ${JSON.stringify(result.blockIpActionState)}`
+    );
+  }
 }
 
 async function main() {
@@ -753,18 +812,19 @@ async function main() {
   await waitForHttpOk(`${WEB_BASE_URL}/login`, 'Web');
 
   const smokeContext = await bootstrapSmokeData();
+  const chromeDebugPort = await resolveChromeDebugPort(DEFAULT_CHROME_DEBUG_PORT);
   const { browserProcess, profileDir } = await launchBrowser({
-    debugPort: CHROME_DEBUG_PORT,
+    debugPort: chromeDebugPort,
     profilePrefix: 'secuai-web-smoke-'
   });
 
   try {
     await waitForHttpOk(
-      `http://127.0.0.1:${CHROME_DEBUG_PORT}/json/version`,
+      `http://127.0.0.1:${chromeDebugPort}/json/version`,
       'Chrome DevTools'
     );
 
-    const result = await runBrowserSmoke(smokeContext);
+    const result = await runBrowserSmoke(smokeContext, chromeDebugPort);
     assertSmokeState(result, smokeContext);
     console.log(JSON.stringify({
       ok: true,

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { access, mkdtemp, rm } from 'node:fs/promises';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -30,6 +31,52 @@ const LINUX_BROWSER_COMMANDS = [
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function waitForConditionWithAction({
+  action,
+  check,
+  timeoutMs = 20000,
+  intervalMs = 100
+}) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await check()) {
+      return true;
+    }
+
+    await action();
+
+    if (await check()) {
+      return true;
+    }
+
+    await delay(intervalMs);
+  }
+
+  return false;
+}
+
+async function getAvailablePort() {
+  const server = net.createServer();
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+
+    const address = server.address();
+
+    if (!address || typeof address === 'string') {
+      throw new Error('Unable to resolve an available local TCP port.');
+    }
+
+    return address.port;
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 function unique(items) {
@@ -164,6 +211,39 @@ export async function resolveBrowserPath() {
       LINUX_BROWSER_COMMANDS.join(', ')
     ].join(' ')
   );
+}
+
+export async function resolveChromeDebugPort(defaultPort, explicitPort = process.env.SECUAI_CHROME_DEBUG_PORT) {
+  if (explicitPort !== undefined && explicitPort !== '') {
+    const parsedPort = Number(explicitPort);
+
+    if (!Number.isInteger(parsedPort) || parsedPort <= 0) {
+      throw new Error(`Invalid SECUAI_CHROME_DEBUG_PORT: ${explicitPort}`);
+    }
+
+    return parsedPort;
+  }
+
+  if (defaultPort !== undefined && defaultPort !== null) {
+    const occupiedProbe = net.createServer();
+
+    try {
+      await new Promise((resolve, reject) => {
+        occupiedProbe.once('error', reject);
+        occupiedProbe.listen(defaultPort, '127.0.0.1', resolve);
+      });
+
+      return defaultPort;
+    } catch {
+      return getAvailablePort();
+    } finally {
+      if (occupiedProbe.listening) {
+        await new Promise((resolve) => occupiedProbe.close(resolve));
+      }
+    }
+  }
+
+  return getAvailablePort();
 }
 
 export async function launchBrowser({ debugPort, profilePrefix }) {

@@ -42,6 +42,9 @@ export interface BlockedEntityItem {
   source: BlockedEntitySource;
   expiresAt: string | null;
   createdAt: string;
+  attackEventId?: number | null;
+  isActive?: boolean;
+  originKind?: string;
 }
 
 export interface CreateBlockedEntityInput {
@@ -50,6 +53,7 @@ export interface CreateBlockedEntityInput {
   reason: string;
   source?: BlockedEntitySource;
   expiresAt?: string | null;
+  attackEventId?: number;
 }
 
 export interface BlockedEntityResponse {

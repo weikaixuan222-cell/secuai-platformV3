@@ -8,10 +8,15 @@ import {
   hasRecentAttackEventForClient
 } from "../repositories/attackEventsRepository.js";
 import {
+  createBlockedEntity,
+  findActiveBlockedIpBySiteId
+} from "../repositories/blockedEntitiesRepository.js";
+import {
   countRecentRequestsBySiteAndIp,
   listPendingRequestLogs,
   markRequestLogProcessed
 } from "../repositories/requestLogsRepository.js";
+import { findSecurityPolicyBySiteId } from "../repositories/securityPoliciesRepository.js";
 import {
   findThreatSignalMatch,
   isSuspiciousUserAgentAllowed,
@@ -34,6 +39,22 @@ type StructuredAttackEventDetails = {
   recentRequestCount?: number;
   threshold?: number;
   windowSeconds?: number;
+  protectionEnforcement?: {
+    mode: "monitor" | "protect";
+    action: "allow" | "monitor" | "block";
+    reasons: string[];
+    matchedBlockedEntity?: ProtectionMatchedBlockedEntityTrace | null;
+  };
+};
+
+type ProtectionMatchedBlockedEntityTrace = {
+      id: number;
+      entityType: "ip";
+      entityValue: string;
+      source: "manual" | "automatic";
+      attackEventId: number | null;
+      originKind: "manual" | "automatic" | "event_disposition";
+      expiresAt: string | null;
 };
 
 type DetectionFinding = {
@@ -52,6 +73,154 @@ export type DetectionRunResult = {
   aiFailureCount: number;
 };
 
+async function shouldAutoBlockHighRisk(log: RequestLogRow, riskScore: number): Promise<boolean> {
+  const policy = await findSecurityPolicyBySiteId(log.site_id);
+
+  if (!policy?.auto_block_high_risk) {
+    return false;
+  }
+
+  return riskScore >= Number(policy.high_risk_score_threshold);
+}
+
+async function autoBlockHighRiskAttack(
+  log: RequestLogRow,
+  attackEvent: AttackEventRow,
+  riskScore: number
+): Promise<void> {
+  if (!log.client_ip) {
+    return;
+  }
+
+  if (!(await shouldAutoBlockHighRisk(log, riskScore))) {
+    return;
+  }
+
+  const activeBlockedEntity = await findActiveBlockedIpBySiteId(
+    log.site_id,
+    log.client_ip,
+    new Date()
+  );
+
+  if (activeBlockedEntity) {
+    return;
+  }
+
+  await createBlockedEntity({
+    siteId: log.site_id,
+    entityType: "ip",
+    entityValue: log.client_ip,
+    reason: "AI 高风险自动处置",
+    source: "automatic",
+    attackEventId: attackEvent.id
+  });
+}
+
+function extractProtectionEnforcementTrace(
+  metadata: RequestLogRow["metadata"]
+): StructuredAttackEventDetails["protectionEnforcement"] | undefined {
+  const rawValue = metadata?.protectionEnforcement;
+
+  if (!rawValue || typeof rawValue !== "object" || Array.isArray(rawValue)) {
+    return undefined;
+  }
+
+  const traceRecord = rawValue as Record<string, unknown>;
+  const rawMode = traceRecord.mode;
+  const rawAction = traceRecord.action;
+  const rawReasons = traceRecord.reasons;
+  const rawMatchedBlockedEntity = traceRecord.matchedBlockedEntity;
+
+  if (rawMode !== "monitor" && rawMode !== "protect") {
+    return undefined;
+  }
+
+  if (rawAction !== "allow" && rawAction !== "monitor" && rawAction !== "block") {
+    return undefined;
+  }
+
+  if (!Array.isArray(rawReasons) || rawReasons.some((item) => typeof item !== "string")) {
+    return undefined;
+  }
+
+  let matchedBlockedEntity: ProtectionMatchedBlockedEntityTrace | null | undefined;
+
+  if (rawMatchedBlockedEntity === null) {
+    matchedBlockedEntity = null;
+  } else if (rawMatchedBlockedEntity !== undefined) {
+    if (
+      typeof rawMatchedBlockedEntity !== "object" ||
+      Array.isArray(rawMatchedBlockedEntity)
+    ) {
+      return undefined;
+    }
+
+    const entityRecord = rawMatchedBlockedEntity as Record<string, unknown>;
+    const id =
+      typeof entityRecord.id === "number"
+        ? entityRecord.id
+        : typeof entityRecord.id === "string" && /^\d+$/.test(entityRecord.id)
+          ? Number(entityRecord.id)
+          : null;
+    const attackEventId =
+      entityRecord.attackEventId === null
+        ? null
+        : typeof entityRecord.attackEventId === "number"
+          ? entityRecord.attackEventId
+          : typeof entityRecord.attackEventId === "string" &&
+              /^\d+$/.test(entityRecord.attackEventId)
+            ? Number(entityRecord.attackEventId)
+            : null;
+
+    if (
+      id === null ||
+      entityRecord.entityType !== "ip" ||
+      typeof entityRecord.entityValue !== "string" ||
+      (entityRecord.source !== "manual" && entityRecord.source !== "automatic") ||
+      (entityRecord.attackEventId !== null && attackEventId === null) ||
+      (entityRecord.originKind !== "manual" &&
+        entityRecord.originKind !== "automatic" &&
+        entityRecord.originKind !== "event_disposition") ||
+      (entityRecord.expiresAt !== null && typeof entityRecord.expiresAt !== "string")
+    ) {
+      return undefined;
+    }
+
+    matchedBlockedEntity = {
+      id,
+      entityType: "ip",
+      entityValue: entityRecord.entityValue,
+      source: entityRecord.source,
+      attackEventId,
+      originKind: entityRecord.originKind,
+      expiresAt: entityRecord.expiresAt
+    };
+  }
+
+  return {
+    mode: rawMode,
+    action: rawAction,
+    reasons: rawReasons,
+    matchedBlockedEntity
+  };
+}
+
+function withProtectionEnforcementTrace(
+  log: RequestLogRow,
+  details: StructuredAttackEventDetails
+): StructuredAttackEventDetails {
+  const protectionEnforcement = extractProtectionEnforcementTrace(log.metadata);
+
+  if (!protectionEnforcement) {
+    return details;
+  }
+
+  return {
+    ...details,
+    protectionEnforcement
+  };
+}
+
 async function detectFindings(log: RequestLogRow): Promise<DetectionFinding[]> {
   const findings: DetectionFinding[] = [];
   const textFields = [
@@ -69,14 +238,14 @@ async function detectFindings(log: RequestLogRow): Promise<DetectionFinding[]> {
       ruleCode: "mvp-sqli-keyword",
       severity: "high",
       summary: "Potential SQL injection keywords detected in the request.",
-      details: {
+      details: withProtectionEnforcementTrace(log, {
         matchedField: sqliMatch.field,
         matchedRule: "mvp-sqli-keyword",
         matchedSnippet: sqliMatch.token,
         reason: "The request matched known SQL injection keyword patterns.",
         matchedTokens: sqliMatch.matchedTokens,
         clientIp: log.client_ip ?? undefined
-      }
+      })
     });
   }
 
@@ -88,14 +257,14 @@ async function detectFindings(log: RequestLogRow): Promise<DetectionFinding[]> {
       ruleCode: "mvp-xss-payload",
       severity: "high",
       summary: "Potential XSS payload detected in the request.",
-      details: {
+      details: withProtectionEnforcementTrace(log, {
         matchedField: xssMatch.field,
         matchedRule: "mvp-xss-payload",
         matchedSnippet: xssMatch.token,
         reason: "The request matched common XSS payload fragments.",
         matchedTokens: xssMatch.matchedTokens,
         clientIp: log.client_ip ?? undefined
-      }
+      })
     });
   }
 
@@ -110,14 +279,14 @@ async function detectFindings(log: RequestLogRow): Promise<DetectionFinding[]> {
       ruleCode: "mvp-suspicious-user-agent",
       severity: "medium",
       summary: "Suspicious scanning tool user-agent detected.",
-      details: {
+      details: withProtectionEnforcementTrace(log, {
         matchedField: suspiciousUserAgentMatch.field,
         matchedRule: "mvp-suspicious-user-agent",
         matchedSnippet: suspiciousUserAgentMatch.token,
         reason: "The user-agent matched a known scanning or enumeration tool.",
         matchedTokens: suspiciousUserAgentMatch.matchedTokens,
         clientIp: log.client_ip ?? undefined
-      }
+      })
     });
   }
 
@@ -135,7 +304,7 @@ async function detectFindings(log: RequestLogRow): Promise<DetectionFinding[]> {
         ruleCode: "mvp-high-frequency-access",
         severity: "medium",
         summary: "Abnormally high request frequency detected from the same client IP.",
-        details: {
+        details: withProtectionEnforcementTrace(log, {
           matchedField: "clientIp",
           matchedRule: "mvp-high-frequency-access",
           matchedSnippet: log.client_ip,
@@ -144,7 +313,7 @@ async function detectFindings(log: RequestLogRow): Promise<DetectionFinding[]> {
           recentRequestCount,
           threshold: HIGH_FREQUENCY_THRESHOLD,
           windowSeconds: HIGH_FREQUENCY_WINDOW_SECONDS
-        }
+        })
       });
     }
   }
@@ -199,7 +368,7 @@ async function persistDetectionResult(
     const createdEvents: AttackEventRow[] = [];
 
     for (const finding of findings) {
-      const attackEvent = await createAttackEvent(
+      const attackEventResult = await createAttackEvent(
         {
           tenantId: log.tenant_id,
           siteId: log.site_id,
@@ -213,7 +382,9 @@ async function persistDetectionResult(
         client
       );
 
-      createdEvents.push(attackEvent);
+      if (attackEventResult.created) {
+        createdEvents.push(attackEventResult.attackEvent);
+      }
     }
 
     await markRequestLogProcessed(log.id, client);
@@ -233,6 +404,8 @@ async function persistAiRiskResultForEvent(log: RequestLogRow, attackEvent: Atta
       analysis
     })
   );
+
+  await autoBlockHighRiskAttack(log, attackEvent, analysis.riskScore);
 }
 
 async function processSingleLog(log: RequestLogRow): Promise<{

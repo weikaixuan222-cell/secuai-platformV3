@@ -8,6 +8,10 @@
     "packages/*"
   ],
   "scripts": {
+    "dev:demo-stack": "node scripts/start-demo-stack.mjs",
+    "smoke:demo-stack-ready": "node scripts/demo-stack-ready-smoke.mjs",
+    "doctor:demo-stack": "node scripts/demo-stack-doctor.mjs",
+    "demo:standard": "node scripts/demo-standard-flow.mjs",
     "dev:web": "npm run dev --workspace @secuai/web",
     "dev:api": "npm run dev --workspace @secuai/api",
     "build:web": "npm run build --workspace @secuai/web",

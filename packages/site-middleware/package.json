@@ -7,10 +7,14 @@
   "types": "dist/src/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "demo:onboard-native-site": "node dist/examples/onboard-native-site.js",
     "demo:native-node": "node dist/examples/native-node-server.js",
     "demo:e2e-monitor": "node dist/examples/monitor-e2e-demo.js",
     "smoke:blocked-entity-lifecycle": "node dist/examples/blocked-entity-lifecycle-smoke.js",
     "smoke:e2e-enforcement": "node dist/examples/enforcement-e2e-smoke.js",
+    "smoke:xss-policy-lifecycle": "node dist/examples/xss-policy-lifecycle-smoke.js",
+    "smoke:sql-injection-policy-lifecycle": "node dist/examples/sql-injection-policy-lifecycle-smoke.js",
+    "smoke:rate-limit-lifecycle": "node dist/examples/rate-limit-lifecycle-smoke.js",
     "typecheck": "tsc --pretty false --noEmit -p tsconfig.json",
     "test": "node --test tests/site-middleware.test.js"
   }

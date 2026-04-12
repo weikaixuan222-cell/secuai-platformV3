@@ -2,12 +2,14 @@ import {
   cleanupBrowser,
   launchBrowser,
   requireWebSocket,
+  resolveChromeDebugPort,
+  waitForConditionWithAction,
   waitForHttpOk
 } from './smoke-helpers.mjs';
 
 const API_BASE_URL = process.env.SECUAI_API_BASE_URL || 'http://127.0.0.1:3201';
 const WEB_BASE_URL = process.env.SECUAI_WEB_BASE_URL || 'http://127.0.0.1:3200';
-const CHROME_DEBUG_PORT = Number(process.env.SECUAI_CHROME_DEBUG_PORT || 9223);
+const DEFAULT_CHROME_DEBUG_PORT = 9223;
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
@@ -27,6 +29,57 @@ async function requestJson(url, options = {}) {
   }
 
   return payload.data;
+}
+
+async function reportRequestLog(siteContext, body) {
+  await requestJson(`${API_BASE_URL}/api/v1/request-logs`, {
+    method: 'POST',
+    headers: {
+      'x-site-ingestion-key': siteContext.ingestionKey
+    },
+    body: JSON.stringify({
+      siteId: siteContext.siteId,
+      occurredAt: new Date().toISOString(),
+      method: 'GET',
+      host: siteContext.siteDomain,
+      statusCode: 200,
+      clientIp: '203.0.113.120',
+      userAgent: 'Mozilla/5.0 policy-smoke',
+      scheme: 'https',
+      ...body
+    })
+  });
+}
+
+async function bootstrapAttackEvent(authHeaders, siteContext, tenantId) {
+  await reportRequestLog(siteContext, {
+    path: '/checkout',
+    queryString: 'id=1 UNION SELECT password FROM users'
+  });
+
+  await requestJson(`${API_BASE_URL}/api/v1/detection/run`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      tenantId,
+      limit: 100
+    })
+  });
+
+  const attackEvents = await requestJson(
+    `${API_BASE_URL}/api/v1/attack-events?tenantId=${tenantId}&siteId=${siteContext.siteId}&eventType=sql_injection&limit=20`,
+    {
+      headers: authHeaders
+    }
+  );
+
+  const attackEvent = attackEvents.items?.[0];
+
+  if (!attackEvent) {
+    throw new Error('Policy smoke bootstrap did not generate an attack event.');
+  }
+
+  return Number(attackEvent.id);
 }
 
 async function bootstrapPolicySmokeData() {
@@ -89,6 +142,15 @@ async function bootstrapPolicySmokeData() {
       headers: authHeaders
     }
   );
+  const attackEventId = await bootstrapAttackEvent(
+    authHeaders,
+    {
+      siteId,
+      siteDomain: siteData.site.domain,
+      ingestionKey: siteData.ingestionKey
+    },
+    tenantId
+  );
 
   return {
     token,
@@ -96,6 +158,7 @@ async function bootstrapPolicySmokeData() {
     siteId,
     siteDomain: siteData.site.domain,
     ingestionKey: siteData.ingestionKey,
+    attackEventId,
     initialPolicy: policyData.securityPolicy,
     initialBlockedCount: blockedList.items.length,
     authHeaders
@@ -145,9 +208,9 @@ async function bootstrapNoSitePolicySmokeData() {
   };
 }
 
-async function openCdpTarget() {
+async function openCdpTarget(chromeDebugPort) {
   const response = await fetch(
-    `http://127.0.0.1:${CHROME_DEBUG_PORT}/json/new?about:blank`,
+    `http://127.0.0.1:${chromeDebugPort}/json/new?about:blank`,
     {
       method: 'PUT'
     }
@@ -346,14 +409,19 @@ async function setupPolicyPageSession(client, context) {
   });
 }
 
-async function runNoSiteEmptyStateSmoke(context) {
-  const client = await createCdpClient(await openCdpTarget());
+async function runNoSiteEmptyStateSmoke(context, chromeDebugPort) {
+  const client = await createCdpClient(await openCdpTarget(chromeDebugPort));
   await client.init();
   await setupPolicyPageSession(client, context);
 
   await client.navigate(`${WEB_BASE_URL}/dashboard/policies`);
   await client.waitFor(
-    `location.pathname === '/dashboard/policies' && Boolean(document.querySelector('[data-testid="policy-no-site-empty-state"]')) && Boolean(document.querySelector('[data-testid="blocked-entities-no-site-empty-state"]'))`
+    `location.pathname === '/dashboard/policies' && (
+      Boolean(document.querySelector('[data-testid="policy-no-site-empty-state"]')) ||
+      Boolean(document.querySelector('[data-testid="policy-save-button"]')) ||
+      Boolean(document.querySelector('[data-testid="policy-site-overview"]')) ||
+      Boolean(document.querySelector('[data-testid="policy-feedback-banner"]'))
+    )`
   );
 
   const noSiteState = await client.evaluate(`(() => {
@@ -362,12 +430,14 @@ async function runNoSiteEmptyStateSmoke(context) {
     const simulatorCard = document.querySelector('[data-testid="protection-simulator-no-site-empty-state"]');
     return {
       pageUrl: location.pathname + location.search,
+      pageText: document.body?.textContent?.trim() || '',
       policyEmptyText: policyCard?.textContent?.trim() || '',
       blockedEmptyText: blockedCard?.textContent?.trim() || '',
       simulatorEmptyText: simulatorCard?.textContent?.trim() || '',
       hasPolicyAction: Boolean(document.querySelector('[data-testid="policy-no-site-empty-action"]')),
       hasBlockedAction: Boolean(document.querySelector('[data-testid="blocked-entities-no-site-empty-action"]')),
       hasSimulatorAction: Boolean(simulatorCard?.querySelector('a,button')),
+      hasOverviewPanel: Boolean(document.querySelector('[data-testid="policy-site-overview"]')),
       hasPolicySaveButton: Boolean(document.querySelector('[data-testid="policy-save-button"]')),
       createButtonDisabled: document.querySelector('[data-testid="blocked-entity-create-button"]')?.disabled === true,
       hasSimulatorSubmitButton: Boolean(document.querySelector('[data-testid="protection-simulator-submit-button"]'))
@@ -380,8 +450,8 @@ async function runNoSiteEmptyStateSmoke(context) {
   return noSiteState;
 }
 
-async function runBrowserSmoke(context) {
-  const client = await createCdpClient(await openCdpTarget());
+async function runBrowserSmoke(context, chromeDebugPort) {
+  const client = await createCdpClient(await openCdpTarget(chromeDebugPort));
   await client.init();
 
   await setupPolicyPageSession(client, context);
@@ -396,6 +466,16 @@ async function runBrowserSmoke(context) {
     const selects = Array.from(document.querySelectorAll('select'));
     const siteFilter = document.querySelector('[data-testid="policy-site-filter-select"]');
     const simulatorEmptyState = document.querySelector('[data-testid="protection-simulator-empty-state"]');
+    const overviewPanel = document.querySelector('[data-testid="policy-site-overview"]');
+    const overviewItems = Array.from(
+      document.querySelectorAll('[data-testid="policy-site-overview"] [data-testid="policy-site-overview-item"]')
+    ).map((item) => item.textContent?.trim() || '');
+    const overviewLatest = document.querySelector('[data-testid="policy-site-overview-latest-activity"]');
+    const overviewEventsLink = document.querySelector('[data-testid="policy-site-overview-events-link"]');
+    const overviewEventsHint = document.querySelector('[data-testid="policy-site-overview-events-hint"]');
+    const overviewModeHint = document.querySelector('[data-testid="policy-site-overview-mode-hint"]');
+    const overviewLatestHint = document.querySelector('[data-testid="policy-site-overview-latest-hint"]');
+    const overviewCountsHint = document.querySelector('[data-testid="policy-site-overview-counts-hint"]');
     return {
       pageUrl: location.pathname + location.search,
       siteSelectValue: selects[0]?.value || '',
@@ -404,7 +484,17 @@ async function runBrowserSmoke(context) {
       siteFilterAriaBusy: siteFilter?.getAttribute('aria-busy') || '',
       hasSimulatorEmptyState: Boolean(simulatorEmptyState),
       saveButtonState: document.querySelector('[data-testid="policy-save-button"]')?.dataset.loadingState || '',
-      createButtonState: document.querySelector('[data-testid="blocked-entity-create-button"]')?.dataset.loadingState || ''
+      createButtonState: document.querySelector('[data-testid="blocked-entity-create-button"]')?.dataset.loadingState || '',
+      hasOverviewPanel: Boolean(overviewPanel),
+      overviewText: overviewPanel?.textContent?.trim() || '',
+      overviewItems,
+      latestActivityText: overviewLatest?.textContent?.trim() || '',
+      eventsLinkHref: overviewEventsLink?.getAttribute('href') || '',
+      eventsLinkText: overviewEventsLink?.textContent?.trim() || '',
+      eventsHintText: overviewEventsHint?.textContent?.trim() || '',
+      modeHintText: overviewModeHint?.textContent?.trim() || '',
+      latestHintText: overviewLatestHint?.textContent?.trim() || '',
+      countsHintText: overviewCountsHint?.textContent?.trim() || ''
     };
   })()`);
 
@@ -478,12 +568,24 @@ async function runBrowserSmoke(context) {
     );
   };
 
-  await client.evaluate(`
-    document.querySelector('[data-testid="policy-mode-protect"]')?.click();
-  `);
-  await client.waitFor(
-    `document.querySelector('[data-testid="policy-mode-protect"]')?.dataset.selectedState === 'active'`
-  );
+  const protectModeActivated = await waitForConditionWithAction({
+    action: () =>
+      client.evaluate(`
+        document.querySelector('[data-testid="policy-mode-protect"]')?.click();
+      `),
+    check: () =>
+      client.evaluate(
+        `document.querySelector('[data-testid="policy-mode-protect"]')?.dataset.selectedState === 'active'`
+      ),
+    timeoutMs: 20000,
+    intervalMs: 150
+  });
+
+  if (!protectModeActivated) {
+    throw new Error(
+      "Timed out waiting for policy mode protect to become active after retrying the click."
+    );
+  }
   await client.evaluate(`
     document.querySelector('[data-testid="policy-rate-limit-input"]')?.removeAttribute('min');
   `);
@@ -780,6 +882,60 @@ async function runBrowserSmoke(context) {
     };
   })()`);
 
+  const eventDispositionBlockedEntity = await requestJson(
+    `${API_BASE_URL}/api/v1/sites/${context.siteId}/blocked-entities`,
+    {
+      method: 'POST',
+      headers: context.authHeaders,
+      body: JSON.stringify({
+        entityType: 'ip',
+        entityValue: '203.0.113.120',
+        reason: 'Policy smoke linked event block',
+        source: 'manual',
+        expiresAt: null,
+        attackEventId: context.attackEventId
+      })
+    }
+  );
+  const automaticExpiredBlockedEntity = await requestJson(
+    `${API_BASE_URL}/api/v1/sites/${context.siteId}/blocked-entities`,
+    {
+      method: 'POST',
+      headers: context.authHeaders,
+      body: JSON.stringify({
+        entityType: 'ip',
+        entityValue: '203.0.113.121',
+        reason: 'Policy smoke automatic expired block',
+        source: 'automatic',
+        expiresAt: new Date(Date.now() + 1_500).toISOString()
+      })
+    }
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 2_200));
+
+  await client.navigate(`${WEB_BASE_URL}${pagePath}`);
+  await client.waitFor(
+    `location.pathname === '/dashboard/policies' && new URLSearchParams(location.search).get('siteId') === '${context.siteId}' && Boolean(document.querySelector('[data-testid="blocked-entity-origin-${eventDispositionBlockedEntity.blockedEntity.id}"]')) && Boolean(document.querySelector('[data-testid="blocked-entity-is-active-${automaticExpiredBlockedEntity.blockedEntity.id}"]'))`
+  );
+
+  const blockedEntityTraceabilityState = await client.evaluate(`(() => {
+    const eventOrigin = document.querySelector('[data-testid="blocked-entity-origin-${eventDispositionBlockedEntity.blockedEntity.id}"]');
+    const eventActive = document.querySelector('[data-testid="blocked-entity-is-active-${eventDispositionBlockedEntity.blockedEntity.id}"]');
+    const eventLink = document.querySelector('[data-testid="blocked-entity-revert-link-${eventDispositionBlockedEntity.blockedEntity.id}"]');
+    const automaticOrigin = document.querySelector('[data-testid="blocked-entity-origin-${automaticExpiredBlockedEntity.blockedEntity.id}"]');
+    const automaticActive = document.querySelector('[data-testid="blocked-entity-is-active-${automaticExpiredBlockedEntity.blockedEntity.id}"]');
+    const automaticLink = document.querySelector('[data-testid="blocked-entity-revert-link-${automaticExpiredBlockedEntity.blockedEntity.id}"]');
+    return {
+      eventOriginText: eventOrigin?.textContent?.trim() || '',
+      eventActiveText: eventActive?.textContent?.trim() || '',
+      eventLinkHref: eventLink?.getAttribute('href') || '',
+      automaticOriginText: automaticOrigin?.textContent?.trim() || '',
+      automaticActiveText: automaticActive?.textContent?.trim() || '',
+      automaticHasLink: Boolean(automaticLink)
+    };
+  })()`);
+
   client.assertNoBrowserErrors();
   client.close();
 
@@ -798,7 +954,10 @@ async function runBrowserSmoke(context) {
     blockDeleteFailureLoadingState,
     blockDeleteErrorFeedback,
     blockDeletingState,
-    blockDeleteSuccessFeedback
+    blockDeleteSuccessFeedback,
+    blockedEntityTraceabilityState,
+    eventDispositionBlockedEntity,
+    automaticExpiredBlockedEntity
   };
 }
 
@@ -810,7 +969,21 @@ async function assertApiState(context, browserResult) {
     browserResult.initialPageState.siteFilterDisabled ||
     browserResult.initialPageState.siteFilterAriaDisabled !== 'false' ||
     browserResult.initialPageState.siteFilterAriaBusy !== 'false' ||
-    !browserResult.initialPageState.hasSimulatorEmptyState
+    !browserResult.initialPageState.hasSimulatorEmptyState ||
+    !browserResult.initialPageState.hasOverviewPanel ||
+    !browserResult.initialPageState.overviewText.includes(context.siteDomain) ||
+    browserResult.initialPageState.overviewItems.length < 4 ||
+    !browserResult.initialPageState.latestActivityText ||
+    !browserResult.initialPageState.modeHintText.includes('监控模式') ||
+    !browserResult.initialPageState.latestHintText.includes('request_logs') ||
+    !browserResult.initialPageState.latestHintText.includes('ai_risk_results') ||
+    !browserResult.initialPageState.countsHintText.includes('attack_events') ||
+    !browserResult.initialPageState.countsHintText.includes('high / critical') ||
+    !browserResult.initialPageState.eventsLinkText.includes('进入该站点事件列表') ||
+    !browserResult.initialPageState.eventsHintText.includes('保留当前站点范围') ||
+    !browserResult.initialPageState.eventsHintText.includes('attack_events') ||
+    browserResult.initialPageState.eventsLinkHref !==
+      `/dashboard/events?siteId=${encodeURIComponent(context.siteId)}`
   ) {
     throw new Error(`Policy page URL/site sync failed: ${JSON.stringify(browserResult.initialPageState)}`);
   }
@@ -963,6 +1136,20 @@ async function assertApiState(context, browserResult) {
     throw new Error(`Blocked-entity delete success feedback missing: ${JSON.stringify(browserResult.blockDeleteSuccessFeedback)}`);
   }
 
+  if (
+    browserResult.blockedEntityTraceabilityState.eventOriginText !== '事件详情页快速封禁' ||
+    browserResult.blockedEntityTraceabilityState.eventActiveText !== '生效中' ||
+    browserResult.blockedEntityTraceabilityState.eventLinkHref !==
+      `/dashboard/events/${context.attackEventId}` ||
+    browserResult.blockedEntityTraceabilityState.automaticOriginText !== '自动防护拦截' ||
+    browserResult.blockedEntityTraceabilityState.automaticActiveText !== '已失效' ||
+    browserResult.blockedEntityTraceabilityState.automaticHasLink
+  ) {
+    throw new Error(
+      `Blocked-entity traceability rendering failed: ${JSON.stringify(browserResult.blockedEntityTraceabilityState)}`
+    );
+  }
+
   const policyData = await requestJson(
     `${API_BASE_URL}/api/v1/sites/${context.siteId}/security-policy`,
     {
@@ -975,6 +1162,17 @@ async function assertApiState(context, browserResult) {
       headers: context.authHeaders
     }
   );
+  const eventDispositionEntity = blockedEntityList.items.find(
+    (item) => item.id === browserResult.eventDispositionBlockedEntity.blockedEntity.id
+  );
+  const automaticExpiredEntity = blockedEntityList.items.find(
+    (item) => item.id === browserResult.automaticExpiredBlockedEntity.blockedEntity.id
+  );
+  const normalizedEventDispositionAttackEventId =
+    eventDispositionEntity?.attackEventId === null ||
+    eventDispositionEntity?.attackEventId === undefined
+      ? eventDispositionEntity?.attackEventId
+      : Number(eventDispositionEntity.attackEventId);
 
   if (
     policyData.securityPolicy.mode !== 'protect' ||
@@ -984,8 +1182,18 @@ async function assertApiState(context, browserResult) {
     throw new Error(`Policy API verification failed: ${JSON.stringify(policyData.securityPolicy)}`);
   }
 
-  if (blockedEntityList.items.length !== 0) {
-    throw new Error(`Blocked-entity delete verification failed: ${JSON.stringify(blockedEntityList.items)}`);
+  if (
+    blockedEntityList.items.length !== 2 ||
+    !eventDispositionEntity ||
+    eventDispositionEntity.originKind !== 'event_disposition' ||
+    eventDispositionEntity.isActive !== true ||
+    normalizedEventDispositionAttackEventId !== context.attackEventId ||
+    !automaticExpiredEntity ||
+    automaticExpiredEntity.originKind !== 'automatic' ||
+    automaticExpiredEntity.isActive !== false ||
+    automaticExpiredEntity.attackEventId !== null
+  ) {
+    throw new Error(`Blocked-entity traceability API verification failed: ${JSON.stringify(blockedEntityList.items)}`);
   }
 
   return {
@@ -1018,21 +1226,22 @@ async function main() {
 
   const smokeContext = await bootstrapPolicySmokeData();
   const noSiteContext = await bootstrapNoSitePolicySmokeData();
+  const chromeDebugPort = await resolveChromeDebugPort(DEFAULT_CHROME_DEBUG_PORT);
   const { browserProcess, profileDir } = await launchBrowser({
-    debugPort: CHROME_DEBUG_PORT,
+    debugPort: chromeDebugPort,
     profilePrefix: 'secuai-policy-smoke-'
   });
 
   try {
     await waitForHttpOk(
-      `http://127.0.0.1:${CHROME_DEBUG_PORT}/json/version`,
+      `http://127.0.0.1:${chromeDebugPort}/json/version`,
       'Chrome DevTools'
     );
 
-    const noSiteState = await runNoSiteEmptyStateSmoke(noSiteContext);
+    const noSiteState = await runNoSiteEmptyStateSmoke(noSiteContext, chromeDebugPort);
     assertNoSiteState(noSiteState);
 
-    const browserResult = await runBrowserSmoke(smokeContext);
+    const browserResult = await runBrowserSmoke(smokeContext, chromeDebugPort);
     const apiResult = await assertApiState(smokeContext, browserResult);
 
     console.log(JSON.stringify({
@@ -1042,6 +1251,7 @@ async function main() {
         siteDomain: smokeContext.siteDomain,
         tenantId: smokeContext.tenantId,
         noSiteTenantId: noSiteContext.tenantId,
+        attackEventId: smokeContext.attackEventId,
         hasIngestionKey: Boolean(smokeContext.ingestionKey),
         initialPolicyMode: smokeContext.initialPolicy.mode,
         initialBlockedCount: smokeContext.initialBlockedCount

@@ -35,13 +35,6 @@ type ProtectionPayload = {
   mode: SiteProtectionMode;
   action: SiteProtectionAction;
   reasons: string[];
-  matchedBlockedEntity?: SiteProtectionDecision["matchedBlockedEntity"] | Record<string, unknown> | null;
-};
-
-type AttackEventListItem = {
-  id: number;
-  eventType: string;
-  details: JsonObject | null;
 };
 
 class SmokeError extends Error {
@@ -54,14 +47,13 @@ const platformBaseUrl = (process.env.SECUAI_PLATFORM_URL ?? "http://127.0.0.1:32
   /\/+$/,
   ""
 );
-const sitePort = Number(process.env.SECUAI_ENFORCEMENT_SITE_PORT ?? "0");
+const sitePort = Number(process.env.SECUAI_RATE_LIMIT_SITE_PORT ?? "0");
 const demoStamp = Date.now().toString();
-const demoEmail = `enforcement-smoke-${demoStamp}@example.com`;
-const demoTenantSlug = `enforcement-smoke-${demoStamp}`;
-const demoDomain = `enforcement-smoke-${demoStamp}.example.com`;
-const blockedClientIp = process.env.SECUAI_ENFORCEMENT_BLOCKED_IP ?? "198.51.100.77";
-const allowClientIp = process.env.SECUAI_ENFORCEMENT_ALLOW_IP ?? "198.51.100.88";
-const suspiciousUserAgent = "sqlmap/1.8.4";
+const demoEmail = `rate-limit-smoke-${demoStamp}@example.com`;
+const demoTenantSlug = `rate-limit-smoke-${demoStamp}`;
+const demoDomain = `rate-limit-smoke-${demoStamp}.example.com`;
+const rateLimitClientIp = process.env.SECUAI_RATE_LIMIT_CLIENT_IP ?? "198.51.100.61";
+const rateLimitThreshold = Number(process.env.SECUAI_RATE_LIMIT_THRESHOLD ?? "2");
 
 let currentSiteServerPort = sitePort;
 
@@ -140,7 +132,7 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
       body: {
         email: demoEmail,
         password: "StrongPass123",
-        displayName: "Enforcement Smoke"
+        displayName: "Rate Limit Lifecycle Smoke"
       }
     }),
     "register demo user"
@@ -164,7 +156,7 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
       method: "POST",
       token: loginData.token,
       body: {
-        name: "Enforcement Smoke Tenant",
+        name: "Rate Limit Lifecycle Tenant",
         slug: demoTenantSlug
       }
     }),
@@ -180,7 +172,7 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
       token: loginData.token,
       body: {
         tenantId: tenantData.tenant.id,
-        name: "Enforcement Smoke Site",
+        name: "Rate Limit Lifecycle Site",
         domain: demoDomain
       }
     }),
@@ -188,19 +180,6 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
   );
 
   await updateSecurityPolicy(loginData.token, siteData.site.id, "monitor");
-
-  expectSuccess<{ blockedEntity: { id: number } }>(
-    await apiRequest(`/api/v1/sites/${siteData.site.id}/blocked-entities`, {
-      method: "POST",
-      token: loginData.token,
-      body: {
-        entityType: "ip",
-        entityValue: blockedClientIp,
-        reason: "Enforcement smoke blocked IP"
-      }
-    }),
-    "create blocked entity"
-  );
 
   return {
     token: loginData.token,
@@ -222,11 +201,11 @@ async function updateSecurityPolicy(
       token,
       body: {
         mode,
-        blockSqlInjection: true,
-        blockXss: true,
-        blockSuspiciousUserAgent: true,
+        blockSqlInjection: false,
+        blockXss: false,
+        blockSuspiciousUserAgent: false,
         enableRateLimit: true,
-        rateLimitThreshold: 100,
+        rateLimitThreshold,
         autoBlockHighRisk: false,
         highRiskScoreThreshold: 90
       }
@@ -235,33 +214,41 @@ async function updateSecurityPolicy(
   );
 }
 
-async function runDetection(token: string, tenantId: string): Promise<void> {
-  expectSuccess<JsonObject>(
-    await apiRequest("/api/v1/detection/run", {
+async function submitSeedRequestLog(input: {
+  siteId: string;
+  ingestionKey: string;
+  occurredAt: string;
+  host: string;
+  path: string;
+  queryString?: string;
+  clientIp: string;
+  userAgent: string;
+}): Promise<ProtectionPayload> {
+  const data = expectSuccess<{
+    requestLog: { id: number };
+    protection: ProtectionPayload;
+  }>(
+    await apiRequest("/api/v1/request-logs", {
       method: "POST",
-      token,
+      ingestionKey: input.ingestionKey,
       body: {
-        tenantId,
-        limit: 20
+        siteId: input.siteId,
+        occurredAt: input.occurredAt,
+        method: "GET",
+        host: input.host,
+        path: input.path,
+        queryString: input.queryString,
+        statusCode: 200,
+        clientIp: input.clientIp,
+        userAgent: input.userAgent,
+        referer: "https://example.com/rate-limit-seed"
       }
     }),
-    "run attack detection"
-  );
-}
-
-async function listAttackEvents(
-  token: string,
-  tenantId: string,
-  siteId: string
-): Promise<AttackEventListItem[]> {
-  const data = expectSuccess<{ items: AttackEventListItem[] }>(
-    await apiRequest(`/api/v1/attack-events?tenantId=${tenantId}&siteId=${siteId}&limit=20`, {
-      token
-    }),
-    "list attack events"
+    "seed request log"
   );
 
-  return data.items;
+  assert.ok(data.requestLog.id > 0, "seed request log should be created");
+  return data.protection;
 }
 
 async function directProtectionCheck(
@@ -300,44 +287,8 @@ function normalizeDecision(decision: SiteProtectionDecision): JsonObject {
     action: decision.action,
     mode: decision.mode,
     reasons: decision.reasons,
-    matchedBlockedEntity: decision.matchedBlockedEntity ?? null,
     monitored: decision.monitored,
     failOpen: decision.failOpen
-  };
-}
-
-function normalizeMatchedBlockedEntity(
-  value: ProtectionPayload["matchedBlockedEntity"]
-): JsonObject | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const entityRecord = value as Record<string, unknown>;
-  const id =
-    typeof entityRecord.id === "number"
-      ? entityRecord.id
-      : typeof entityRecord.id === "string" && /^\d+$/.test(entityRecord.id)
-        ? Number(entityRecord.id)
-        : null;
-  const attackEventId =
-    entityRecord.attackEventId === null
-      ? null
-      : typeof entityRecord.attackEventId === "number"
-        ? entityRecord.attackEventId
-        : typeof entityRecord.attackEventId === "string" &&
-            /^\d+$/.test(entityRecord.attackEventId)
-          ? Number(entityRecord.attackEventId)
-          : null;
-
-  return {
-    id,
-    entityType: entityRecord.entityType,
-    entityValue: entityRecord.entityValue,
-    source: entityRecord.source,
-    attackEventId,
-    originKind: entityRecord.originKind,
-    expiresAt: entityRecord.expiresAt
   };
 }
 
@@ -346,7 +297,6 @@ function normalizeProtection(protection: ProtectionPayload): JsonObject {
     action: protection.action,
     mode: protection.mode,
     reasons: protection.reasons,
-    matchedBlockedEntity: normalizeMatchedBlockedEntity(protection.matchedBlockedEntity),
     monitored: protection.action === "monitor",
     failOpen: false
   };
@@ -449,29 +399,83 @@ async function triggerSiteRequest(
   };
 }
 
-async function verifyAllowConsistency(input: {
-  client: ReturnType<typeof createSiteProtectionClient>;
+async function seedRecentTraffic(input: {
   siteId: string;
   ingestionKey: string;
   siteDomain: string;
+  context: SiteRequestContext;
 }): Promise<void> {
-  const context: SiteRequestContext = {
+  const baseOccurredAt = Date.parse(input.context.occurredAt ?? new Date().toISOString());
+
+  for (let index = rateLimitThreshold; index >= 1; index -= 1) {
+    const seedProtection = await submitSeedRequestLog({
+      siteId: input.siteId,
+      ingestionKey: input.ingestionKey,
+      occurredAt: new Date(baseOccurredAt - index * 5_000).toISOString(),
+      host: input.siteDomain,
+      path: input.context.path,
+      queryString: input.context.queryString,
+      clientIp: input.context.clientIp!,
+      userAgent: input.context.userAgent ?? "Mozilla/5.0 (SecuAI Rate Limit Smoke)"
+    });
+
+    assert.equal(seedProtection.action, "allow", `seed request ${index} should stay allow`);
+    assert.deepEqual(seedProtection.reasons, [], `seed request ${index} should not add reasons`);
+  }
+}
+
+function buildRateLimitContext(siteDomain: string): SiteRequestContext {
+  return {
     method: "GET",
-    host: input.siteDomain,
-    path: "/products",
-    queryString: "page=1",
-    clientIp: allowClientIp,
-    userAgent: "Mozilla/5.0 (SecuAI Smoke)",
-    referer: "https://example.com/home",
+    host: siteDomain,
+    path: "/catalog/search",
+    queryString: "q=starter",
+    clientIp: rateLimitClientIp,
+    userAgent: "Mozilla/5.0 (SecuAI Rate Limit Smoke)",
+    referer: "https://example.com/catalog",
     occurredAt: new Date().toISOString()
   };
+}
 
-  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, context);
-  const middlewareDecision = await input.client.checkRequest(context);
-  assertProtectionConsistency("allow", protection, middlewareDecision);
+async function assertRateLimitStep(input: {
+  label: string;
+  expectedAction: SiteProtectionAction;
+  expectedMode: SiteProtectionMode;
+  expectSiteStatus: 200 | 403;
+  client: ReturnType<typeof createSiteProtectionClient>;
+  siteId: string;
+  ingestionKey: string;
+  context: SiteRequestContext;
+}): Promise<void> {
+  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, input.context);
+  assert.equal(protection.mode, input.expectedMode, `${input.label} mode mismatch`);
+  assert.equal(protection.action, input.expectedAction, `${input.label} action mismatch`);
+  assert.deepEqual(
+    protection.reasons,
+    ["blocked_rate_limit"],
+    `${input.label} reasons should stay stable`
+  );
 
-  const siteResponse = await triggerSiteRequest(context);
-  assert.equal(siteResponse.status, 200);
+  const middlewareDecision = await input.client.checkRequest(input.context);
+  assertProtectionConsistency(input.label, protection, middlewareDecision);
+
+  const siteResponse = await triggerSiteRequest(input.context);
+  assert.equal(siteResponse.status, input.expectSiteStatus);
+
+  if (input.expectSiteStatus === 403) {
+    assert.equal(siteResponse.json.success, false);
+    assert.equal((siteResponse.json.error as JsonObject).code, "REQUEST_BLOCKED");
+    assert.deepEqual(
+      (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).reasons,
+      protection.reasons
+    );
+    assert.equal(
+      (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).mode,
+      protection.mode
+    );
+    return;
+  }
+
   assert.equal(siteResponse.json.ok, true);
   assert.deepEqual(
     normalizeDecision(siteResponse.json.protection as SiteProtectionDecision),
@@ -479,103 +483,25 @@ async function verifyAllowConsistency(input: {
   );
 }
 
-async function verifyMonitorConsistency(input: {
+async function verifyInitialAllow(input: {
   client: ReturnType<typeof createSiteProtectionClient>;
-  token: string;
-  tenantId: string;
   siteId: string;
   ingestionKey: string;
-  siteDomain: string;
+  context: SiteRequestContext;
 }): Promise<void> {
-  const context: SiteRequestContext = {
-    method: "GET",
-    host: input.siteDomain,
-    path: "/account/login",
-    queryString: "view=security",
-    clientIp: blockedClientIp,
-    userAgent: suspiciousUserAgent,
-    occurredAt: new Date().toISOString()
-  };
-
-  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, context);
+  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, input.context);
   assert.equal(protection.mode, "monitor");
-  assert.equal(protection.action, "monitor");
-  assert.ok(protection.reasons.includes("blocked_ip"));
-  assert.ok(protection.matchedBlockedEntity, "monitor protection should return matchedBlockedEntity");
+  assert.equal(protection.action, "allow");
+  assert.deepEqual(protection.reasons, []);
 
-  const middlewareDecision = await input.client.checkRequest(context);
-  assertProtectionConsistency("monitor", protection, middlewareDecision);
-
-  const siteResponse = await triggerSiteRequest(context);
-  assert.equal(siteResponse.status, 200);
-  assert.equal(siteResponse.json.ok, true);
-  assert.deepEqual(
-    normalizeDecision(siteResponse.json.protection as SiteProtectionDecision),
-    normalizeProtection(protection)
-  );
-  const reported = await input.client.reportRequestLog(context, middlewareDecision);
-  assert.equal(reported, true, "monitor request should be reported to request_logs");
-  await runDetection(input.token, input.tenantId);
-  const attackEvents = await listAttackEvents(input.token, input.tenantId, input.siteId);
-  const tracedEvent = attackEvents.find((item) => item.eventType === "suspicious_user_agent");
-
-  assert.ok(tracedEvent, "monitor request should produce a suspicious_user_agent attack event");
-  assert.deepEqual(
-    (tracedEvent.details?.protectionEnforcement as JsonObject | undefined)?.matchedBlockedEntity ??
-      null,
-    normalizeMatchedBlockedEntity(protection.matchedBlockedEntity)
-  );
-}
-
-async function verifyProtectConsistency(input: {
-  client: ReturnType<typeof createSiteProtectionClient>;
-  token: string;
-  siteId: string;
-  ingestionKey: string;
-  siteDomain: string;
-}): Promise<void> {
-  await updateSecurityPolicy(input.token, input.siteId, "protect");
-
-  const context: SiteRequestContext = {
-    method: "GET",
-    host: input.siteDomain,
-    path: "/checkout",
-    queryString: "step=payment",
-    clientIp: blockedClientIp,
-    userAgent: suspiciousUserAgent,
-    occurredAt: new Date().toISOString()
-  };
-
-  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, context);
-  assert.equal(protection.mode, "protect");
-  assert.equal(protection.action, "block");
-  assert.ok(protection.reasons.includes("blocked_ip"));
-  assert.ok(protection.matchedBlockedEntity, "protect protection should return matchedBlockedEntity");
-
-  const middlewareDecision = await input.client.checkRequest(context);
-  assertProtectionConsistency("protect", protection, middlewareDecision);
-
-  const siteResponse = await triggerSiteRequest(context);
-  assert.equal(siteResponse.status, 403);
-  assert.equal(siteResponse.json.success, false);
-  assert.equal((siteResponse.json.error as JsonObject).code, "REQUEST_BLOCKED");
-  assert.deepEqual(
-    (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).reasons,
-    protection.reasons
-  );
-  assert.equal(
-    (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).mode,
-    protection.mode
-  );
-  assert.deepEqual(
-    (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).matchedBlockedEntity,
-    normalizeMatchedBlockedEntity(protection.matchedBlockedEntity)
-  );
+  const middlewareDecision = await input.client.checkRequest(input.context);
+  assertProtectionConsistency("initial allow", protection, middlewareDecision);
 }
 
 async function main(): Promise<void> {
-  console.log("SecuAI site-middleware enforcement smoke starting");
+  console.log("SecuAI rate limit lifecycle smoke starting");
   console.log(`Platform API: ${platformBaseUrl}`);
+  console.log(`Rate limit threshold: ${rateLimitThreshold}`);
 
   await waitForApiReady();
   const provisioned = await provisionDemoSite();
@@ -585,51 +511,65 @@ async function main(): Promise<void> {
     siteIngestionKey: provisioned.ingestionKey,
     timeoutMs: 1500,
     requestLogReporting: {
-      enabled: true,
-      scope: "monitor"
+      enabled: false
     }
   });
   const siteServer = await startDemoSiteServer({
     siteId: provisioned.siteId,
     ingestionKey: provisioned.ingestionKey
   });
+  const context = buildRateLimitContext(provisioned.siteDomain);
 
   try {
-    await verifyAllowConsistency({
+    await verifyInitialAllow({
       client,
       siteId: provisioned.siteId,
       ingestionKey: provisioned.ingestionKey,
-      siteDomain: provisioned.siteDomain
+      context
     });
-    console.log("allow consistency verified");
+    console.log("initial allow before rate limit verified");
 
-    await verifyMonitorConsistency({
-      client,
-      token: provisioned.token,
-      tenantId: provisioned.tenantId,
+    await seedRecentTraffic({
       siteId: provisioned.siteId,
       ingestionKey: provisioned.ingestionKey,
-      siteDomain: provisioned.siteDomain
+      siteDomain: provisioned.siteDomain,
+      context
     });
-    console.log("monitor consistency verified");
 
-    await verifyProtectConsistency({
+    await assertRateLimitStep({
+      label: "monitor after rate limit threshold",
+      expectedAction: "monitor",
+      expectedMode: "monitor",
+      expectSiteStatus: 200,
       client,
-      token: provisioned.token,
       siteId: provisioned.siteId,
       ingestionKey: provisioned.ingestionKey,
-      siteDomain: provisioned.siteDomain
+      context
     });
-    console.log("protect consistency verified");
+    console.log("monitor after rate limit threshold verified");
 
-    console.log("SecuAI site-middleware enforcement smoke completed");
+    await updateSecurityPolicy(provisioned.token, provisioned.siteId, "protect");
+
+    await assertRateLimitStep({
+      label: "block in protect mode after rate limit threshold",
+      expectedAction: "block",
+      expectedMode: "protect",
+      expectSiteStatus: 403,
+      client,
+      siteId: provisioned.siteId,
+      ingestionKey: provisioned.ingestionKey,
+      context
+    });
+    console.log("block in protect mode after rate limit threshold verified");
+
+    console.log("SecuAI rate limit lifecycle smoke completed");
   } finally {
     await closeServer(siteServer);
   }
 }
 
 main().catch((error) => {
-  console.error("SecuAI site-middleware enforcement smoke failed");
+  console.error("SecuAI rate limit lifecycle smoke failed");
 
   if (error instanceof SmokeError && error.details) {
     console.error(error.message, error.details);

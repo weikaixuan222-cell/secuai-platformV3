@@ -171,6 +171,9 @@ CREATE TABLE IF NOT EXISTS ai_risk_results (
   )
 );
 
+ALTER TABLE blocked_entities
+  ADD COLUMN IF NOT EXISTS attack_event_id BIGINT REFERENCES attack_events(id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_tenant_users_user_id
   ON tenant_users (user_id);
 
@@ -185,6 +188,16 @@ CREATE INDEX IF NOT EXISTS idx_sites_tenant_id_status
 
 CREATE INDEX IF NOT EXISTS idx_blocked_entities_site_created_at_desc
   ON blocked_entities (site_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_blocked_entities_attack_event_id
+  ON blocked_entities (attack_event_id)
+  WHERE attack_event_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_blocked_entities_active_automatic_ip
+  ON blocked_entities (site_id, entity_type, entity_value)
+  WHERE source = 'automatic'
+    AND entity_type = 'ip'
+    AND expires_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_site_occurred_at_desc
   ON request_logs (site_id, occurred_at DESC);
@@ -209,12 +222,19 @@ CREATE INDEX IF NOT EXISTS idx_attack_events_site_status_detected_at_desc
 CREATE INDEX IF NOT EXISTS idx_attack_events_request_log_id
   ON attack_events (request_log_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_attack_events_request_log_rule
+  ON attack_events (request_log_id, event_type, rule_code);
+
 CREATE INDEX IF NOT EXISTS idx_ai_risk_results_request_log_analyzed_at_desc
   ON ai_risk_results (request_log_id, analyzed_at DESC)
   WHERE request_log_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_ai_risk_results_attack_event_analyzed_at_desc
   ON ai_risk_results (attack_event_id, analyzed_at DESC)
+  WHERE attack_event_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_risk_results_attack_event_model
+  ON ai_risk_results (attack_event_id, model_name, model_version)
   WHERE attack_event_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_ai_risk_results_tenant_score_desc

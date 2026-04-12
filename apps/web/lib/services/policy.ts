@@ -52,11 +52,21 @@ function normalizeBlockedEntityId(
 function normalizeBlockedEntityItem(
   blockedEntity: BlockedEntityItem
 ): BlockedEntityItem {
+  const normalizedAttackEventId =
+    blockedEntity.attackEventId === undefined
+      ? undefined
+      : blockedEntity.attackEventId === null
+        ? null
+        : normalizeBlockedEntityId(
+          blockedEntity.attackEventId as unknown as number | string
+        );
+
   return {
     ...blockedEntity,
     id: normalizeBlockedEntityId(
       blockedEntity.id as unknown as number | string
-    )
+    ),
+    attackEventId: normalizedAttackEventId
   };
 }
 
@@ -81,13 +91,16 @@ export function getSiteSecurityPolicy(
 }
 
 export function listSiteBlockedEntities(
-  siteId: string
+  siteId: string,
+  attackEventId?: number | string
 ): Promise<ListResponse<BlockedEntityItem>> {
   const normalizedSiteId = normalizeSiteId(siteId);
+  let url = `/api/v1/sites/${normalizedSiteId}/blocked-entities`;
+  if (attackEventId !== undefined) {
+    url += `?attackEventId=${encodeURIComponent(attackEventId)}`;
+  }
 
-  return fetchApi<ListResponse<BlockedEntityItem>>(
-    `/api/v1/sites/${normalizedSiteId}/blocked-entities`
-  ).then((result) => ({
+  return fetchApi<ListResponse<BlockedEntityItem>>(url).then((result) => ({
     items: result.items.map(normalizeBlockedEntityItem)
   }));
 }
@@ -146,7 +159,8 @@ export function createSiteBlockedEntity(
     entityValue,
     reason,
     source: input.source,
-    expiresAt: input.expiresAt || null
+    expiresAt: input.expiresAt || null,
+    attackEventId: input.attackEventId
   };
 
   return fetchApi<BlockedEntityResponse>(

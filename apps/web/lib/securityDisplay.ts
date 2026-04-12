@@ -24,6 +24,33 @@ export function formatDateTime(value: string | null | undefined): string {
   });
 }
 
+export const QUICK_BLOCK_REASON_FROM_EVENT_DETAIL = '来自事件详情页的快速封禁';
+
+export function formatBlockedEntityOrigin(
+  source: BlockedEntitySource,
+  reason: string,
+  originKind?: string
+): string | null {
+  if (originKind === 'automatic' || originKind === 'auto') {
+    return '自动防护拦截';
+  }
+
+  if (originKind === 'event_disposition') {
+    return '事件详情页快速封禁';
+  }
+
+  const normalizedReason = reason.trim();
+
+  if (
+    source === 'manual' &&
+    normalizedReason === QUICK_BLOCK_REASON_FROM_EVENT_DETAIL
+  ) {
+    return '事件详情页快速封禁';
+  }
+
+  return null;
+}
+
 export function formatProtectionAction(action: ProtectionAction): string {
   switch (action) {
     case 'allow':
@@ -161,4 +188,9 @@ export function formatBlockedEntitySource(source: BlockedEntitySource): string {
     default:
       return source;
   }
+}
+
+export function formatIsActive(isActive?: boolean): string {
+  if (isActive === undefined) return '';
+  return isActive ? '生效中' : '已失效';
 }

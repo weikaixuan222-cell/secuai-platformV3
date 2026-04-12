@@ -85,6 +85,7 @@ export interface BlockedEntityRow {
   entity_value: string;
   reason: string;
   source: BlockedEntitySource;
+  attack_event_id: number | null;
   expires_at: Date | null;
   created_at: Date;
 }
@@ -222,6 +223,7 @@ export interface CreateBlockedEntityInput {
   entityValue: string;
   reason: string;
   source?: BlockedEntitySource;
+  attackEventId?: number;
   expiresAt?: Date;
 }
 

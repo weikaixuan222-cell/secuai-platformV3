@@ -35,13 +35,6 @@ type ProtectionPayload = {
   mode: SiteProtectionMode;
   action: SiteProtectionAction;
   reasons: string[];
-  matchedBlockedEntity?: SiteProtectionDecision["matchedBlockedEntity"] | Record<string, unknown> | null;
-};
-
-type AttackEventListItem = {
-  id: number;
-  eventType: string;
-  details: JsonObject | null;
 };
 
 class SmokeError extends Error {
@@ -54,14 +47,12 @@ const platformBaseUrl = (process.env.SECUAI_PLATFORM_URL ?? "http://127.0.0.1:32
   /\/+$/,
   ""
 );
-const sitePort = Number(process.env.SECUAI_ENFORCEMENT_SITE_PORT ?? "0");
+const sitePort = Number(process.env.SECUAI_SQLI_POLICY_SITE_PORT ?? "0");
 const demoStamp = Date.now().toString();
-const demoEmail = `enforcement-smoke-${demoStamp}@example.com`;
-const demoTenantSlug = `enforcement-smoke-${demoStamp}`;
-const demoDomain = `enforcement-smoke-${demoStamp}.example.com`;
-const blockedClientIp = process.env.SECUAI_ENFORCEMENT_BLOCKED_IP ?? "198.51.100.77";
-const allowClientIp = process.env.SECUAI_ENFORCEMENT_ALLOW_IP ?? "198.51.100.88";
-const suspiciousUserAgent = "sqlmap/1.8.4";
+const demoEmail = `sqli-policy-smoke-${demoStamp}@example.com`;
+const demoTenantSlug = `sqli-policy-smoke-${demoStamp}`;
+const demoDomain = `sql-injection-policy-smoke-${demoStamp}.example.com`;
+const demoClientIp = process.env.SECUAI_SQLI_POLICY_CLIENT_IP ?? "198.51.100.91";
 
 let currentSiteServerPort = sitePort;
 
@@ -133,6 +124,31 @@ async function waitForApiReady(timeoutMs = 10_000): Promise<void> {
   });
 }
 
+async function updateSecurityPolicy(
+  token: string,
+  siteId: string,
+  mode: SiteProtectionMode,
+  blockSqlInjection: boolean
+): Promise<void> {
+  expectSuccess<{ securityPolicy: JsonObject }>(
+    await apiRequest(`/api/v1/sites/${siteId}/security-policy`, {
+      method: "PUT",
+      token,
+      body: {
+        mode,
+        blockSqlInjection,
+        blockXss: false,
+        blockSuspiciousUserAgent: false,
+        enableRateLimit: false,
+        rateLimitThreshold: 100,
+        autoBlockHighRisk: false,
+        highRiskScoreThreshold: 90
+      }
+    }),
+    `update security policy to ${mode} / blockSqlInjection=${blockSqlInjection}`
+  );
+}
+
 async function provisionDemoSite(): Promise<ProvisionedSite> {
   const registerData = expectSuccess<{ user: { id: string } }>(
     await apiRequest("/api/v1/auth/register", {
@@ -140,7 +156,7 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
       body: {
         email: demoEmail,
         password: "StrongPass123",
-        displayName: "Enforcement Smoke"
+        displayName: "SQLi Policy Lifecycle Smoke"
       }
     }),
     "register demo user"
@@ -164,7 +180,7 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
       method: "POST",
       token: loginData.token,
       body: {
-        name: "Enforcement Smoke Tenant",
+        name: "SQLi Policy Lifecycle Tenant",
         slug: demoTenantSlug
       }
     }),
@@ -180,27 +196,14 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
       token: loginData.token,
       body: {
         tenantId: tenantData.tenant.id,
-        name: "Enforcement Smoke Site",
+        name: "SQLi Policy Lifecycle Site",
         domain: demoDomain
       }
     }),
     "create demo site"
   );
 
-  await updateSecurityPolicy(loginData.token, siteData.site.id, "monitor");
-
-  expectSuccess<{ blockedEntity: { id: number } }>(
-    await apiRequest(`/api/v1/sites/${siteData.site.id}/blocked-entities`, {
-      method: "POST",
-      token: loginData.token,
-      body: {
-        entityType: "ip",
-        entityValue: blockedClientIp,
-        reason: "Enforcement smoke blocked IP"
-      }
-    }),
-    "create blocked entity"
-  );
+  await updateSecurityPolicy(loginData.token, siteData.site.id, "monitor", false);
 
   return {
     token: loginData.token,
@@ -209,59 +212,6 @@ async function provisionDemoSite(): Promise<ProvisionedSite> {
     ingestionKey: siteData.ingestionKey,
     siteDomain: demoDomain
   };
-}
-
-async function updateSecurityPolicy(
-  token: string,
-  siteId: string,
-  mode: SiteProtectionMode
-): Promise<void> {
-  expectSuccess<{ securityPolicy: JsonObject }>(
-    await apiRequest(`/api/v1/sites/${siteId}/security-policy`, {
-      method: "PUT",
-      token,
-      body: {
-        mode,
-        blockSqlInjection: true,
-        blockXss: true,
-        blockSuspiciousUserAgent: true,
-        enableRateLimit: true,
-        rateLimitThreshold: 100,
-        autoBlockHighRisk: false,
-        highRiskScoreThreshold: 90
-      }
-    }),
-    `update security policy to ${mode}`
-  );
-}
-
-async function runDetection(token: string, tenantId: string): Promise<void> {
-  expectSuccess<JsonObject>(
-    await apiRequest("/api/v1/detection/run", {
-      method: "POST",
-      token,
-      body: {
-        tenantId,
-        limit: 20
-      }
-    }),
-    "run attack detection"
-  );
-}
-
-async function listAttackEvents(
-  token: string,
-  tenantId: string,
-  siteId: string
-): Promise<AttackEventListItem[]> {
-  const data = expectSuccess<{ items: AttackEventListItem[] }>(
-    await apiRequest(`/api/v1/attack-events?tenantId=${tenantId}&siteId=${siteId}&limit=20`, {
-      token
-    }),
-    "list attack events"
-  );
-
-  return data.items;
 }
 
 async function directProtectionCheck(
@@ -306,47 +256,12 @@ function normalizeDecision(decision: SiteProtectionDecision): JsonObject {
   };
 }
 
-function normalizeMatchedBlockedEntity(
-  value: ProtectionPayload["matchedBlockedEntity"]
-): JsonObject | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const entityRecord = value as Record<string, unknown>;
-  const id =
-    typeof entityRecord.id === "number"
-      ? entityRecord.id
-      : typeof entityRecord.id === "string" && /^\d+$/.test(entityRecord.id)
-        ? Number(entityRecord.id)
-        : null;
-  const attackEventId =
-    entityRecord.attackEventId === null
-      ? null
-      : typeof entityRecord.attackEventId === "number"
-        ? entityRecord.attackEventId
-        : typeof entityRecord.attackEventId === "string" &&
-            /^\d+$/.test(entityRecord.attackEventId)
-          ? Number(entityRecord.attackEventId)
-          : null;
-
-  return {
-    id,
-    entityType: entityRecord.entityType,
-    entityValue: entityRecord.entityValue,
-    source: entityRecord.source,
-    attackEventId,
-    originKind: entityRecord.originKind,
-    expiresAt: entityRecord.expiresAt
-  };
-}
-
 function normalizeProtection(protection: ProtectionPayload): JsonObject {
   return {
     action: protection.action,
     mode: protection.mode,
     reasons: protection.reasons,
-    matchedBlockedEntity: normalizeMatchedBlockedEntity(protection.matchedBlockedEntity),
+    matchedBlockedEntity: null,
     monitored: protection.action === "monitor",
     failOpen: false
   };
@@ -449,132 +364,82 @@ async function triggerSiteRequest(
   };
 }
 
-async function verifyAllowConsistency(input: {
-  client: ReturnType<typeof createSiteProtectionClient>;
-  siteId: string;
-  ingestionKey: string;
-  siteDomain: string;
-}): Promise<void> {
-  const context: SiteRequestContext = {
+function buildSqlInjectionContext(siteDomain: string): SiteRequestContext {
+  return {
     method: "GET",
-    host: input.siteDomain,
-    path: "/products",
-    queryString: "page=1",
-    clientIp: allowClientIp,
-    userAgent: "Mozilla/5.0 (SecuAI Smoke)",
-    referer: "https://example.com/home",
+    host: siteDomain,
+    path: "/login",
+    queryString: "id=1+UNION+SELECT+password+FROM+users",
+    clientIp: demoClientIp,
+    userAgent: "Mozilla/5.0 (SecuAI SQLi Policy Smoke)",
+    referer: "https://example.com/sign-in",
     occurredAt: new Date().toISOString()
   };
-
-  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, context);
-  const middlewareDecision = await input.client.checkRequest(context);
-  assertProtectionConsistency("allow", protection, middlewareDecision);
-
-  const siteResponse = await triggerSiteRequest(context);
-  assert.equal(siteResponse.status, 200);
-  assert.equal(siteResponse.json.ok, true);
-  assert.deepEqual(
-    normalizeDecision(siteResponse.json.protection as SiteProtectionDecision),
-    normalizeProtection(protection)
-  );
 }
 
-async function verifyMonitorConsistency(input: {
+async function verifyAllowWhenRuleDisabled(input: {
   client: ReturnType<typeof createSiteProtectionClient>;
-  token: string;
-  tenantId: string;
   siteId: string;
   ingestionKey: string;
-  siteDomain: string;
+  context: SiteRequestContext;
 }): Promise<void> {
-  const context: SiteRequestContext = {
-    method: "GET",
-    host: input.siteDomain,
-    path: "/account/login",
-    queryString: "view=security",
-    clientIp: blockedClientIp,
-    userAgent: suspiciousUserAgent,
-    occurredAt: new Date().toISOString()
-  };
-
-  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, context);
+  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, input.context);
   assert.equal(protection.mode, "monitor");
-  assert.equal(protection.action, "monitor");
-  assert.ok(protection.reasons.includes("blocked_ip"));
-  assert.ok(protection.matchedBlockedEntity, "monitor protection should return matchedBlockedEntity");
+  assert.equal(protection.action, "allow");
+  assert.deepEqual(protection.reasons, []);
 
-  const middlewareDecision = await input.client.checkRequest(context);
-  assertProtectionConsistency("monitor", protection, middlewareDecision);
+  const middlewareDecision = await input.client.checkRequest(input.context);
+  assertProtectionConsistency("allow with SQLi rule disabled", protection, middlewareDecision);
+}
 
-  const siteResponse = await triggerSiteRequest(context);
-  assert.equal(siteResponse.status, 200);
+async function assertSqlInjectionStep(input: {
+  label: string;
+  expectedAction: SiteProtectionAction;
+  expectedMode: SiteProtectionMode;
+  expectSiteStatus: 200 | 403;
+  client: ReturnType<typeof createSiteProtectionClient>;
+  siteId: string;
+  ingestionKey: string;
+  context: SiteRequestContext;
+}): Promise<void> {
+  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, input.context);
+  assert.equal(protection.mode, input.expectedMode, `${input.label} mode mismatch`);
+  assert.equal(protection.action, input.expectedAction, `${input.label} action mismatch`);
+  assert.deepEqual(
+    protection.reasons,
+    ["blocked_sql_injection"],
+    `${input.label} reasons should stay stable`
+  );
+
+  const middlewareDecision = await input.client.checkRequest(input.context);
+  assertProtectionConsistency(input.label, protection, middlewareDecision);
+
+  const siteResponse = await triggerSiteRequest(input.context);
+  assert.equal(siteResponse.status, input.expectSiteStatus);
+
+  if (input.expectSiteStatus === 403) {
+    assert.equal(siteResponse.json.success, false);
+    assert.equal((siteResponse.json.error as JsonObject).code, "REQUEST_BLOCKED");
+    assert.deepEqual(
+      (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).reasons,
+      protection.reasons
+    );
+    assert.equal(
+      (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).mode,
+      protection.mode
+    );
+    return;
+  }
+
   assert.equal(siteResponse.json.ok, true);
   assert.deepEqual(
     normalizeDecision(siteResponse.json.protection as SiteProtectionDecision),
     normalizeProtection(protection)
-  );
-  const reported = await input.client.reportRequestLog(context, middlewareDecision);
-  assert.equal(reported, true, "monitor request should be reported to request_logs");
-  await runDetection(input.token, input.tenantId);
-  const attackEvents = await listAttackEvents(input.token, input.tenantId, input.siteId);
-  const tracedEvent = attackEvents.find((item) => item.eventType === "suspicious_user_agent");
-
-  assert.ok(tracedEvent, "monitor request should produce a suspicious_user_agent attack event");
-  assert.deepEqual(
-    (tracedEvent.details?.protectionEnforcement as JsonObject | undefined)?.matchedBlockedEntity ??
-      null,
-    normalizeMatchedBlockedEntity(protection.matchedBlockedEntity)
-  );
-}
-
-async function verifyProtectConsistency(input: {
-  client: ReturnType<typeof createSiteProtectionClient>;
-  token: string;
-  siteId: string;
-  ingestionKey: string;
-  siteDomain: string;
-}): Promise<void> {
-  await updateSecurityPolicy(input.token, input.siteId, "protect");
-
-  const context: SiteRequestContext = {
-    method: "GET",
-    host: input.siteDomain,
-    path: "/checkout",
-    queryString: "step=payment",
-    clientIp: blockedClientIp,
-    userAgent: suspiciousUserAgent,
-    occurredAt: new Date().toISOString()
-  };
-
-  const protection = await directProtectionCheck(input.siteId, input.ingestionKey, context);
-  assert.equal(protection.mode, "protect");
-  assert.equal(protection.action, "block");
-  assert.ok(protection.reasons.includes("blocked_ip"));
-  assert.ok(protection.matchedBlockedEntity, "protect protection should return matchedBlockedEntity");
-
-  const middlewareDecision = await input.client.checkRequest(context);
-  assertProtectionConsistency("protect", protection, middlewareDecision);
-
-  const siteResponse = await triggerSiteRequest(context);
-  assert.equal(siteResponse.status, 403);
-  assert.equal(siteResponse.json.success, false);
-  assert.equal((siteResponse.json.error as JsonObject).code, "REQUEST_BLOCKED");
-  assert.deepEqual(
-    (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).reasons,
-    protection.reasons
-  );
-  assert.equal(
-    (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).mode,
-    protection.mode
-  );
-  assert.deepEqual(
-    (((siteResponse.json.error as JsonObject).details ?? {}) as JsonObject).matchedBlockedEntity,
-    normalizeMatchedBlockedEntity(protection.matchedBlockedEntity)
   );
 }
 
 async function main(): Promise<void> {
-  console.log("SecuAI site-middleware enforcement smoke starting");
+  console.log("SecuAI SQL injection policy lifecycle smoke starting");
   console.log(`Platform API: ${platformBaseUrl}`);
 
   await waitForApiReady();
@@ -585,51 +450,60 @@ async function main(): Promise<void> {
     siteIngestionKey: provisioned.ingestionKey,
     timeoutMs: 1500,
     requestLogReporting: {
-      enabled: true,
-      scope: "monitor"
+      enabled: false
     }
   });
   const siteServer = await startDemoSiteServer({
     siteId: provisioned.siteId,
     ingestionKey: provisioned.ingestionKey
   });
+  const context = buildSqlInjectionContext(provisioned.siteDomain);
 
   try {
-    await verifyAllowConsistency({
+    await verifyAllowWhenRuleDisabled({
       client,
       siteId: provisioned.siteId,
       ingestionKey: provisioned.ingestionKey,
-      siteDomain: provisioned.siteDomain
+      context
     });
-    console.log("allow consistency verified");
+    console.log("allow with SQL injection rule disabled verified");
 
-    await verifyMonitorConsistency({
+    await updateSecurityPolicy(provisioned.token, provisioned.siteId, "monitor", true);
+
+    await assertSqlInjectionStep({
+      label: "monitor with SQL injection rule enabled",
+      expectedAction: "monitor",
+      expectedMode: "monitor",
+      expectSiteStatus: 200,
       client,
-      token: provisioned.token,
-      tenantId: provisioned.tenantId,
       siteId: provisioned.siteId,
       ingestionKey: provisioned.ingestionKey,
-      siteDomain: provisioned.siteDomain
+      context
     });
-    console.log("monitor consistency verified");
+    console.log("monitor with SQL injection rule enabled verified");
 
-    await verifyProtectConsistency({
+    await updateSecurityPolicy(provisioned.token, provisioned.siteId, "protect", true);
+
+    await assertSqlInjectionStep({
+      label: "block in protect mode with SQL injection rule enabled",
+      expectedAction: "block",
+      expectedMode: "protect",
+      expectSiteStatus: 403,
       client,
-      token: provisioned.token,
       siteId: provisioned.siteId,
       ingestionKey: provisioned.ingestionKey,
-      siteDomain: provisioned.siteDomain
+      context
     });
-    console.log("protect consistency verified");
+    console.log("block in protect mode with SQL injection rule enabled verified");
 
-    console.log("SecuAI site-middleware enforcement smoke completed");
+    console.log("SecuAI SQL injection policy lifecycle smoke completed");
   } finally {
     await closeServer(siteServer);
   }
 }
 
 main().catch((error) => {
-  console.error("SecuAI site-middleware enforcement smoke failed");
+  console.error("SecuAI SQL injection policy lifecycle smoke failed");
 
   if (error instanceof SmokeError && error.details) {
     console.error(error.message, error.details);

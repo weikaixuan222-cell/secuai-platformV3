@@ -21,6 +21,7 @@ import {
 } from '@/lib/eventFilters';
 import {
   buildSiteFilterOptions,
+  buildPoliciesPagePath,
   type SiteFilterOption
 } from '@/lib/siteFilters';
 import {
@@ -137,6 +138,12 @@ export default function EventsPage() {
     );
   }, [appliedFilters.siteId, siteOptions]);
 
+  const currentSiteOption = useMemo(
+    () =>
+      siteOptions.find((option) => option.value === appliedFilters.siteId) || null,
+    [appliedFilters.siteId, siteOptions]
+  );
+
   const filterMetaText = useMemo(() => {
     if (loading) {
       return hasPendingChanges
@@ -162,6 +169,56 @@ export default function EventsPage() {
           按站点范围、事件类型、处理状态、风险等级和时间范围筛选攻击事件。点击“应用筛选”后，筛选结果会同步到 URL，并在进入详情页后保留。
         </p>
       </header>
+
+      {appliedFilters.siteId && currentSiteOption ? (
+        <section
+          className={`glass-panel ${styles.siteContextPanel}`}
+          aria-label="当前站点上下文"
+          data-testid="events-site-context"
+        >
+          <div className={styles.siteContextHeader}>
+            <div>
+              <p className={styles.siteContextEyebrow}>当前站点上下文</p>
+              <p
+                className={styles.siteContextName}
+                data-testid="events-site-context-name"
+              >
+                {currentSiteOption.label}
+              </p>
+              <p
+                className={styles.siteContextDomain}
+                data-testid="events-site-context-domain"
+              >
+                {currentSiteOption.meta}
+              </p>
+            </div>
+            <Link
+              href={buildPoliciesPagePath(appliedFilters.siteId)}
+              className={styles.siteContextLink}
+              data-testid="events-site-context-policies-link"
+            >
+              返回该站点策略页
+            </Link>
+          </div>
+
+          <div className={styles.siteContextMeta}>
+            <span className={styles.siteContextChip}>当前站点范围已生效</span>
+            <code
+              className={styles.siteContextCode}
+              data-testid="events-site-context-site-id"
+            >
+              siteId: {appliedFilters.siteId}
+            </code>
+          </div>
+
+          <p
+            className={styles.siteContextHint}
+            data-testid="events-site-context-hint"
+          >
+            当前 URL 已锁定 <code>siteId</code>。从总览跳入后会沿用这个范围，进入事件详情再返回时也会保留。
+          </p>
+        </section>
+      ) : null}
 
       <form
         className={`glass-panel ${styles.filterPanel}`}

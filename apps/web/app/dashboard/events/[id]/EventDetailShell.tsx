@@ -3,12 +3,15 @@
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { DashboardSiteSummaryItem } from '@/lib/contracts';
 import {
   buildEventsPagePath,
   hasEventFilters,
   parseEventFiltersFromSearch
 } from '@/lib/eventFilters';
+import { listDashboardSiteSummaries } from '@/lib/services';
+import { parseSiteIdFromSearch } from '@/lib/siteFilters';
 import styles from './event-detail.module.css';
 
 interface EventDetailNavigationState {
@@ -16,6 +19,9 @@ interface EventDetailNavigationState {
   backLabel: string;
   backHint: string;
   hasReturnFilters: boolean;
+  hasSiteContext: boolean;
+  siteName: string;
+  siteDomain: string;
 }
 
 interface EventDetailShellProps {
@@ -36,6 +42,51 @@ export default function EventDetailShell({
   children
 }: EventDetailShellProps) {
   const searchParams = useSearchParams();
+  const [siteSummary, setSiteSummary] = useState<DashboardSiteSummaryItem | null>(null);
+  const selectedSiteId = useMemo(
+    () => parseSiteIdFromSearch(`?${searchParams.toString()}`),
+    [searchParams]
+  );
+
+  useEffect(() => {
+    let ignore = false;
+
+    if (!selectedSiteId) {
+      setSiteSummary(null);
+      return () => {
+        ignore = true;
+      };
+    }
+
+    setSiteSummary(null);
+
+    const loadSiteSummary = async () => {
+      try {
+        const response = await listDashboardSiteSummaries({
+          siteId: selectedSiteId
+        });
+
+        if (ignore) {
+          return;
+        }
+
+        setSiteSummary(
+          response.items.find((item) => item.siteId === selectedSiteId) ?? null
+        );
+      } catch {
+        if (!ignore) {
+          setSiteSummary(null);
+        }
+      }
+    };
+
+    loadSiteSummary();
+
+    return () => {
+      ignore = true;
+    };
+  }, [selectedSiteId]);
+
   const navigationState = useMemo(() => {
     const returnFilters = parseEventFiltersFromSearch(
       `?${searchParams.toString()}`
@@ -48,9 +99,12 @@ export default function EventDetailShell({
       backHint: hasReturnFilters
         ? '已保留当前筛选条件，返回后会恢复原筛选结果。'
         : '当前详情页未携带筛选参数，返回后展示完整攻击事件列表。',
-      hasReturnFilters
+      hasReturnFilters,
+      hasSiteContext: Boolean(selectedSiteId),
+      siteName: siteSummary?.siteName || '当前站点',
+      siteDomain: siteSummary?.siteDomain || ''
     };
-  }, [searchParams]);
+  }, [searchParams, selectedSiteId, siteSummary]);
 
   return (
     <div
@@ -75,6 +129,29 @@ export default function EventDetailShell({
           >
             {navigationState.backHint}
           </span>
+          {navigationState.hasSiteContext ? (
+            <div
+              className={styles.siteContextBadge}
+              aria-label="所属站点上下文"
+              data-testid="event-detail-site-context"
+            >
+              <span className={styles.siteContextLabel}>所属站点</span>
+              <span
+                className={styles.siteContextName}
+                data-testid="event-detail-site-context-name"
+              >
+                {navigationState.siteName}
+              </span>
+              {navigationState.siteDomain ? (
+                <span
+                  className={styles.siteContextDomain}
+                  data-testid="event-detail-site-context-domain"
+                >
+                  {navigationState.siteDomain}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className={styles.heroRow}>

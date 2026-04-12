@@ -43,6 +43,30 @@ function createProtectionClient(baseUrl, timeoutMs = 1000) {
   });
 }
 
+function createMatchedBlockedEntity(id = 91) {
+  return {
+    id,
+    entityType: "ip",
+    entityValue: "203.0.113.10",
+    source: "manual",
+    attackEventId: null,
+    originKind: "manual",
+    expiresAt: null
+  };
+}
+
+function createApiMatchedBlockedEntity(id = 91, attackEventId = null) {
+  return {
+    id: String(id),
+    entityType: "ip",
+    entityValue: "203.0.113.10",
+    source: "manual",
+    attackEventId: attackEventId === null ? null : String(attackEventId),
+    originKind: attackEventId === null ? "manual" : "event_disposition",
+    expiresAt: null
+  };
+}
+
 async function readJsonBody(request) {
   let body = "";
 
@@ -97,7 +121,11 @@ test("checkRequest 返回 allow / monitor / block 三种决策", async () => {
           protection: {
             mode: action === "block" ? "protect" : "monitor",
             action,
-            reasons: action === "allow" ? [] : ["blocked_ip"]
+            reasons: action === "allow" ? [] : ["blocked_ip"],
+            matchedBlockedEntity:
+              action === "allow"
+                ? null
+                : createApiMatchedBlockedEntity(action === "block" ? 93 : 92)
           }
         }
       })
@@ -134,6 +162,7 @@ test("checkRequest 返回 allow / monitor / block 三种决策", async () => {
       action: "monitor",
       mode: "monitor",
       reasons: ["blocked_ip"],
+      matchedBlockedEntity: createMatchedBlockedEntity(92),
       monitored: true,
       failOpen: false
     });
@@ -141,6 +170,7 @@ test("checkRequest 返回 allow / monitor / block 三种决策", async () => {
       action: "block",
       mode: "protect",
       reasons: ["blocked_ip"],
+      matchedBlockedEntity: createMatchedBlockedEntity(93),
       monitored: false,
       failOpen: false
     });
@@ -190,7 +220,9 @@ test("enforceNodeRequestProtection 按 scope=monitor 异步上报 monitor 日志
             protection: {
               mode: action === "block" ? "protect" : "monitor",
               action,
-              reasons: action === "allow" ? [] : ["blocked_ip"]
+              reasons: action === "allow" ? [] : ["blocked_ip"],
+              matchedBlockedEntity:
+                action === "allow" ? null : createApiMatchedBlockedEntity(95)
             }
           }
         })
@@ -257,6 +289,10 @@ test("enforceNodeRequestProtection 按 scope=monitor 异步上报 monitor 日志
       reportedLogs[0].metadata.siteMiddleware.protectionAction,
       "monitor"
     );
+    assert.deepEqual(
+      reportedLogs[0].metadata.siteMiddleware.matchedBlockedEntity,
+      createMatchedBlockedEntity(95)
+    );
   } finally {
     await closeServer(siteServer);
     await closeServer(platformServer);
@@ -287,7 +323,19 @@ test("scope=all 时 allow 和 monitor 都会异步上报 request_logs", async ()
           protection: {
             mode: "monitor",
             action: payload.path === "/monitor" ? "monitor" : "allow",
-            reasons: payload.path === "/monitor" ? ["blocked_xss"] : []
+            reasons: payload.path === "/monitor" ? ["blocked_xss"] : [],
+            matchedBlockedEntity:
+              payload.path === "/monitor"
+                ? {
+                    id: "96",
+                    entityType: "ip",
+                    entityValue: "203.0.113.22",
+                    source: "automatic",
+                    attackEventId: "51",
+                    originKind: "event_disposition",
+                    expiresAt: "2030-01-01T00:00:00.000Z"
+                  }
+                : null
           }
         }
       })
@@ -347,6 +395,15 @@ test("scope=all 时 allow 和 monitor 都会异步上报 request_logs", async ()
       reportedLogs.map((item) => item.path).sort(),
       ["/allow", "/monitor"]
     );
+    assert.deepEqual(reportedLogs[1].metadata.siteMiddleware.matchedBlockedEntity, {
+      id: 96,
+      entityType: "ip",
+      entityValue: "203.0.113.22",
+      source: "automatic",
+      attackEventId: 51,
+      originKind: "event_disposition",
+      expiresAt: "2030-01-01T00:00:00.000Z"
+    });
   } finally {
     await closeServer(server);
   }
@@ -379,7 +436,16 @@ test("enforceNodeRequestProtection 在 block 时直接写出阻断响应", async
           protection: {
             mode: "protect",
             action: "block",
-            reasons: ["blocked_sql_injection"]
+            reasons: ["blocked_sql_injection"],
+            matchedBlockedEntity: {
+              id: "97",
+              entityType: "ip",
+              entityValue: "203.0.113.10",
+              source: "automatic",
+              attackEventId: "71",
+              originKind: "event_disposition",
+              expiresAt: "2030-01-01T00:00:00.000Z"
+            }
           }
         }
       })
@@ -412,6 +478,15 @@ test("enforceNodeRequestProtection 在 block 时直接写出阻断响应", async
     assert.equal(body.success, false);
     assert.equal(body.error.code, "REQUEST_BLOCKED");
     assert.deepEqual(body.error.details.reasons, ["blocked_sql_injection"]);
+    assert.deepEqual(body.error.details.matchedBlockedEntity, {
+      id: 97,
+      entityType: "ip",
+      entityValue: "203.0.113.10",
+      source: "automatic",
+      attackEventId: 71,
+      originKind: "event_disposition",
+      expiresAt: "2030-01-01T00:00:00.000Z"
+    });
   } finally {
     await closeServer(siteServer);
     await closeServer(platformServer);
