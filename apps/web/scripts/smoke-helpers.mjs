@@ -249,15 +249,21 @@ export async function resolveChromeDebugPort(defaultPort, explicitPort = process
 export async function launchBrowser({ debugPort, profilePrefix }) {
   const executablePath = await resolveBrowserPath();
   const profileDir = await mkdtemp(path.join(tmpdir(), profilePrefix));
+  const args = [
+    '--headless=new',
+    '--disable-gpu',
+    `--remote-debugging-port=${debugPort}`,
+    `--user-data-dir=${profileDir}`,
+    'about:blank'
+  ];
+
+  if (process.platform !== 'win32') {
+    args.push('--no-sandbox', '--disable-dev-shm-usage');
+  }
+
   const browserProcess = spawn(
     executablePath,
-    [
-      '--headless=new',
-      '--disable-gpu',
-      `--remote-debugging-port=${debugPort}`,
-      `--user-data-dir=${profileDir}`,
-      'about:blank'
-    ],
+    args,
     {
       stdio: 'ignore',
       detached: process.platform !== 'win32'
