@@ -157,8 +157,9 @@ export function createSmokeRuntime(
   }
 
   async function startAnalyzer() {
+    const pythonCmd = process.platform === "win32" ? "python" : "python3";
     analyzerProcess = startProcess(
-      "python",
+      pythonCmd,
       ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(aiPort)],
       {
         cwd: analyzerDir,
