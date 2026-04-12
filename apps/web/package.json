@@ -7,10 +7,10 @@
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "build": "next build",
     "prestart": "node scripts/prepare-next-start.mjs",
-    "smoke:dashboard-events": "node scripts/dashboard-events-smoke.mjs",
-    "smoke:global-error": "node scripts/global-error-boundary-smoke.mjs",
-    "smoke:global-error:start": "node scripts/global-error-boundary-start-smoke.mjs",
-    "smoke:dashboard-policies": "node scripts/dashboard-policies-smoke.mjs",
+    "smoke:dashboard-events": "node --experimental-websocket scripts/dashboard-events-smoke.mjs",
+    "smoke:global-error": "node --experimental-websocket scripts/global-error-boundary-smoke.mjs",
+    "smoke:global-error:start": "node --experimental-websocket scripts/global-error-boundary-start-smoke.mjs",
+    "smoke:dashboard-policies": "node --experimental-websocket scripts/dashboard-policies-smoke.mjs",
     "start": "next start"
   },
   "dependencies": {
