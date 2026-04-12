@@ -4,6 +4,8 @@ import { randomInt } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+
 
 import { config as loadDotenv } from "dotenv";
 import pg from "pg";
@@ -157,7 +159,10 @@ export function createSmokeRuntime(
   }
 
   async function startAnalyzer() {
-    const pythonCmd = process.platform === "win32" ? "python" : "python3";
+    const isWin = process.platform === "win32";
+    const venvPythonPath = resolve(analyzerDir, ".venv", isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
+    const pythonCmd = existsSync(venvPythonPath) ? venvPythonPath : (isWin ? "python" : "python3");
+    
     analyzerProcess = startProcess(
       pythonCmd,
       ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(aiPort)],
