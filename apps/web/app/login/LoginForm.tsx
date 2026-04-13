@@ -1,17 +1,30 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { setAuthData } from '@/lib/api';
 import { loginWithPassword } from '@/lib/services';
 import styles from './login.module.css';
 
-export default function LoginForm() {
+type LoginFormProps = {
+  initialEmail?: string;
+  showRegistrationSuccess?: boolean;
+};
+
+export default function LoginForm({
+  initialEmail = '',
+  showRegistrationSuccess = false
+}: LoginFormProps) {
   const router = useRouter();
-  const [email, setEmail] = useState('');
+  const [hydrated, setHydrated] = useState(false);
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -33,9 +46,7 @@ export default function LoginForm() {
       }
 
       if (!tenantId) {
-        throw new Error(
-          '登录失败：当前账号尚未关联租户。请先创建租户，或联系管理员分配访问权限。'
-        );
+        throw new Error('登录失败：当前账号尚未关联租户，请联系管理员排查注册流程。');
       }
 
       setAuthData(token, tenantId);
@@ -48,9 +59,30 @@ export default function LoginForm() {
   };
 
   return (
-    <form className={styles.form} onSubmit={handleSubmit}>
+    <form
+      className={styles.form}
+      onSubmit={handleSubmit}
+      data-testid="login-form"
+      data-hydrated={hydrated ? 'true' : 'false'}
+    >
+      {showRegistrationSuccess ? (
+        <div
+          className={`${styles.statusAlert} ${styles.successAlert}`}
+          role="status"
+          aria-live="polite"
+          data-testid="login-success-alert"
+        >
+          注册成功，系统已为你创建默认租户。下一步登录后即可进入控制台，再继续创建站点并接入日志。
+        </div>
+      ) : null}
+
       {error ? (
-        <div className={styles.errorAlert} role="alert" aria-live="assertive">
+        <div
+          className={`${styles.statusAlert} ${styles.errorAlert}`}
+          role="alert"
+          aria-live="assertive"
+          data-testid="login-form-alert"
+        >
           {error}
         </div>
       ) : null}
@@ -67,6 +99,8 @@ export default function LoginForm() {
           onChange={(event) => setEmail(event.target.value)}
           required
           className={styles.input}
+          autoComplete="email"
+          data-testid="login-email-input"
         />
       </div>
 
@@ -82,12 +116,27 @@ export default function LoginForm() {
           onChange={(event) => setPassword(event.target.value)}
           required
           className={styles.input}
+          autoComplete="current-password"
+          data-testid="login-password-input"
         />
       </div>
 
-      <button type="submit" disabled={loading} className={styles.submitButton}>
+      <button
+        type="submit"
+        disabled={loading}
+        className={styles.submitButton}
+        data-testid="login-submit-button"
+        data-loading-state={loading ? 'submitting' : 'idle'}
+      >
         {loading ? '正在登录控制台...' : '登录控制台'}
       </button>
+
+      <p className={styles.alternateAction}>
+        还没有账号？
+        <a href="/register" className={styles.alternateLink} data-testid="login-register-link">
+          去注册
+        </a>
+      </p>
     </form>
   );
 }

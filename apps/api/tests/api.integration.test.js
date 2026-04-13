@@ -150,6 +150,55 @@ async function registerAndLogin(email) {
   };
 }
 
+test("注册闭环：注册后登录应返回默认 tenant membership", async () => {
+  const suffix = Date.now().toString();
+  const email = `register-flow-${suffix}@example.com`;
+  const password = "StrongPass123";
+  let userId = "";
+  let tenantId = "";
+
+  try {
+    const registerResponse = await apiRequest("/api/v1/auth/register", {
+      method: "POST",
+      body: {
+        email,
+        password,
+        displayName: `Register Flow ${suffix}`
+      }
+    });
+
+    assert.equal(registerResponse.status, 201);
+    userId = registerResponse.json.data.user.id;
+
+    const loginResponse = await apiRequest("/api/v1/auth/login", {
+      method: "POST",
+      body: {
+        email,
+        password
+      }
+    });
+
+    assert.equal(loginResponse.status, 200);
+    assert.equal(Array.isArray(loginResponse.json.data.memberships), true);
+    assert.equal(loginResponse.json.data.memberships.length, 1);
+    assert.equal(loginResponse.json.data.memberships[0].role, "owner");
+    assert.equal(loginResponse.json.data.memberships[0].tenant.status, "active");
+    assert.equal(typeof loginResponse.json.data.memberships[0].tenant.id, "string");
+    assert.equal(typeof loginResponse.json.data.memberships[0].tenant.slug, "string");
+    assert.equal(loginResponse.json.data.memberships[0].tenant.slug.length > 0, true);
+
+    tenantId = loginResponse.json.data.memberships[0].tenantId;
+  } finally {
+    if (tenantId) {
+      await dbClient.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+    }
+
+    if (userId) {
+      await dbClient.query(`DELETE FROM users WHERE id = $1`, [userId]);
+    }
+  }
+});
+
 async function createTenant(token, name, slug) {
   const response = await apiRequest("/api/v1/tenants", {
     method: "POST",

@@ -1,23 +1,13 @@
 import type { Metadata } from 'next';
-import LoginForm from './LoginForm';
-import styles from './login.module.css';
+import RegisterForm from './RegisterForm';
+import styles from '../login/login.module.css';
 
 export const metadata: Metadata = {
-  title: '登录控制台 - SecuAI',
-  description: '登录 SecuAI 管理控制台，查看安全总览、攻击事件和站点防护策略。'
+  title: '注册控制台账号 - SecuAI',
+  description: '注册 SecuAI 最小可用控制台账号，创建默认租户后沿用现有登录链路进入安全控制台。'
 };
 
-type LoginPageProps = {
-  searchParams?: {
-    registered?: string;
-    email?: string;
-  };
-};
-
-export default function LoginPage({ searchParams }: LoginPageProps) {
-  const initialEmail = typeof searchParams?.email === 'string' ? searchParams.email : '';
-  const showRegistrationSuccess = searchParams?.registered === '1';
-
+export default function RegisterPage() {
   return (
     <main className={styles.container}>
       <div className={`glass-panel ${styles.loginBox}`}>
@@ -40,16 +30,13 @@ export default function LoginPage({ searchParams }: LoginPageProps) {
             </svg>
           </div>
           <h1 className={styles.title} data-testid="auth-page-title">
-            登录 SecuAI 控制台
+            注册 SecuAI 控制台
           </h1>
           <p className={styles.subtitle}>
-            登录后可查看安全总览、攻击事件、站点策略和封禁名单，并继续处理当前租户下的风险告警。
+            这一页只收口最小可用注册闭环：创建账号、自动生成默认租户，然后回到现有登录链路继续进入控制台。
           </p>
         </div>
-        <LoginForm
-          initialEmail={initialEmail}
-          showRegistrationSuccess={showRegistrationSuccess}
-        />
+        <RegisterForm />
       </div>
     </main>
   );

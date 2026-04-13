@@ -97,6 +97,12 @@ SecuAI 小微企业网站安全防护平台
 
 以上文档与材料已统一到当前执行路径，不再要求新接手者手工拼启动、自检、排查、演示和最小接入步骤。
 
+### 5. 最小认证闭环补齐状态
+- Web 侧已补 `/register`
+- `POST /api/v1/auth/register` 注册后会自动创建默认 tenant 并绑定 `owner`
+- 注册成功后可回到 `/login`，沿用现有登录链路进入 `/dashboard/events`
+- 登录页已补注册成功引导、邮箱回填与登录/注册链接收口
+
 ## 最新验证
 
 ### 统一入口
@@ -117,11 +123,24 @@ SecuAI 小微企业网站安全防护平台
 - 自动拉起 `demo:native-node`
 - 最小接入请求真实返回 `allow`
 
+### 最小注册闭环
+- `npm run build --workspace @secuai/api`
+- `npm run build --workspace @secuai/web`
+- `npm run typecheck --workspace @secuai/web`
+- `TEST_DATABASE_URL=postgresql://secuai:secuai_dev_password@127.0.0.1:55432/secuai npm test --workspace @secuai/api -- --test-name-pattern "注册闭环：注册后登录应返回默认 tenant membership"`
+- Windows 本地起 `@secuai/api` + `@secuai/web` 后执行 `node --experimental-websocket apps/web/scripts/auth-register-smoke.mjs`
+- Ubuntu 24 容器 `mcr.microsoft.com/playwright:v1.55.0-noble` 内完成：
+  - API `/health`
+  - Web `/register`
+  - `auth-register-smoke.mjs`
+
 ### 当前阶段结论
 - 第二阶段后端主线已阶段性收束
 - 第二阶段前端统一收口已阶段性收束
 - 真实接入与演示交付主线当前这一段已阶段性收束
 - 真实接入样板这一小段已阶段性收束
+- 最小注册闭环已补齐并可沿用现有登录主路径
+- 最小注册闭环已完成 Ubuntu 24 / Windows 双侧真实验证
 - 项目已接近整体完成
 
 ## 当前风险
@@ -141,6 +160,7 @@ SecuAI 小微企业网站安全防护平台
 
 ### 2. 当前最后一个高价值缺口已收口
 - `demo:standard` 的重复执行稳定性已完成根因修复
+- 最小注册闭环已完成注册、登录引导与默认 tenant 兼容
 - 当前不应再无节制继续补点，应以封版与交付使用为主
 
 ### 3. 继续保持统一入口

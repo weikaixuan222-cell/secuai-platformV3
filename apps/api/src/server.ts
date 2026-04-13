@@ -26,7 +26,6 @@ import {
   createBlockedEntity,
   createRequestLog,
   createSite,
-  createUser,
   createUserSession,
   deleteBlockedEntityById,
   deleteExpiredUserSessions,
@@ -258,6 +257,21 @@ function parseSlug(value: string): string {
   }
 
   return normalized;
+}
+
+function buildDefaultTenantSlug(email: string, userId: string): string {
+  const emailLocalPart = email.split("@")[0] ?? "user";
+  const normalizedBase = emailLocalPart
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const fallbackBase = normalizedBase.length >= 2 ? normalizedBase : "user";
+  const suffix = userId.slice(0, 8);
+  const maxBaseLength = 80 - suffix.length - 1;
+  const truncatedBase = fallbackBase.slice(0, Math.max(maxBaseLength, 2)).replace(/-+$/g, "");
+  const safeBase = truncatedBase.length >= 2 ? truncatedBase : "user";
+
+  return parseSlug(`${safeBase}-${suffix}`);
 }
 
 function parseDomain(value: string): string {
@@ -759,10 +773,36 @@ async function handleRegister(request: IncomingMessage, response: ServerResponse
   }
 
   const passwordHash = await hashPassword(password);
-  const user = await createUser({
-    email,
-    passwordHash,
-    displayName
+  const user = await withTransaction(async (client) => {
+    const createdAt = new Date();
+    const createdUserResult = await client.query<UserRow>(
+      `
+        INSERT INTO users (email, password_hash, display_name, status, created_at, updated_at)
+        VALUES ($1, $2, $3, 'active', $4, $4)
+        RETURNING *
+      `,
+      [email, passwordHash, displayName, createdAt]
+    );
+    const createdUser = createdUserResult.rows[0];
+    const tenantId = randomUUID();
+    const tenantSlug = buildDefaultTenantSlug(email, createdUser.id);
+
+    await client.query(
+      `
+        INSERT INTO tenants (id, name, slug, status, created_at, updated_at)
+        VALUES ($1, $2, $3, 'active', $4, $4)
+      `,
+      [tenantId, displayName, tenantSlug, createdAt]
+    );
+    await client.query(
+      `
+        INSERT INTO tenant_users (tenant_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+      `,
+      [tenantId, createdUser.id]
+    );
+
+    return createdUser;
   }).catch((error: unknown) => {
     if (typeof error === "object" && error && "code" in error && error.code === "23505") {
       throw new ApiError(409, "EMAIL_ALREADY_EXISTS", "A user with this email already exists.");
