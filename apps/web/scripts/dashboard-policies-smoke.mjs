@@ -6,6 +6,7 @@ import {
   waitForConditionWithAction,
   waitForHttpOk
 } from './smoke-helpers.mjs';
+import { shouldDelayPolicyRequest } from './dashboard-policies-smoke-helpers.mjs';
 
 const API_BASE_URL = process.env.SECUAI_API_BASE_URL || 'http://127.0.0.1:3201';
 const WEB_BASE_URL = process.env.SECUAI_WEB_BASE_URL || 'http://127.0.0.1:3200';
@@ -383,23 +384,8 @@ async function setupPolicyPageSession(client, context) {
       window.fetch = async (resource, options = {}) => {
         const url = typeof resource === 'string' ? resource : resource?.url || '';
         const method = String(options.method || 'GET').toUpperCase();
-        const delayedPolicyRequest =
-          (
-            method === 'PUT' &&
-            url.includes('/api/v1/sites/') &&
-            url.includes('/security-policy')
-          ) ||
-          (
-            method === 'POST' &&
-            url.includes('/api/v1/sites/') &&
-            url.includes('/blocked-entities')
-          ) ||
-          (
-            method === 'DELETE' &&
-            url.includes('/api/v1/blocked-entities/')
-          );
 
-        if (delayedPolicyRequest) {
+        if (${shouldDelayPolicyRequest.toString()}(method, url)) {
           await new Promise((resolve) => setTimeout(resolve, 600));
         }
 
