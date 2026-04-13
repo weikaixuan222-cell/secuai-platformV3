@@ -445,6 +445,9 @@ async function runBrowserSmoke(context, chromeDebugPort) {
   await client.waitFor(
     `document.querySelector('[data-testid="event-detail-block-ip-button"]')?.textContent?.includes('封禁该 IP')`
   );
+  await client.waitFor(
+    `document.querySelector('[data-testid="event-detail-block-ip-button"]')?.disabled === false`
+  );
   await client.evaluate(`document.querySelector('[data-testid="event-detail-block-ip-button"]')?.click()`);
   await client.waitFor(
     `document.querySelector('[data-testid="event-detail-block-ip-feedback"]')?.textContent?.includes('已加入当前站点封禁名单') && document.querySelector('[data-testid="event-detail-block-ip-button"]')?.disabled === true`
