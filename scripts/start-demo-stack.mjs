@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { resolveDockerComposeCommand } from './docker-compose-command.mjs';
 
 const cwd = process.cwd();
 const isWindows = process.platform === 'win32';
@@ -13,6 +14,7 @@ const databaseUrl =
   `postgresql://secuai:secuai_dev_password@127.0.0.1:${postgresPort}/secuai`;
 const apiUrl = `http://${host}:${apiPort}`;
 const webUrl = `http://${host}:${webPort}`;
+const dockerComposeCommand = resolveDockerComposeCommand();
 
 /** @type {import('node:child_process').ChildProcess[]} */
 const childProcesses = [];
@@ -144,7 +146,14 @@ async function main() {
   console.log(`[start-demo-stack] API 地址：${apiUrl}`);
   console.log(`[start-demo-stack] Web 地址：${webUrl}`);
 
-  await runCommand('docker', ['compose', 'up', '-d', 'postgres', 'redis']);
+  console.log(
+    `[start-demo-stack] Docker Compose 命令：${dockerComposeCommand.command} ${dockerComposeCommand.args.join(' ')}`
+  );
+
+  await runCommand(
+    dockerComposeCommand.command,
+    [...dockerComposeCommand.args, 'up', '-d', 'postgres', 'redis']
+  );
   await runCommand('npm', ['run', 'db:schema', '--workspace', '@secuai/api']);
 
   startLongRunningProcess('npm', ['run', 'dev', '--workspace', '@secuai/api'], {

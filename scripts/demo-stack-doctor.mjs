@@ -68,7 +68,7 @@ async function main() {
   if (!postgresReady || !redisReady) {
     printFailure('基础依赖未就绪。', [
       '先执行 npm run dev:demo-stack',
-      '如果仍失败，先确认 docker compose up -d postgres redis 是否成功',
+      '如果仍失败，先确认 docker compose up -d postgres redis 或 docker-compose up -d postgres redis 是否成功',
       '再确认 npm run db:schema --workspace @secuai/api 是否成功',
       `当前探测结果：postgres=${postgresReady ? 'ready' : 'down'} redis=${redisReady ? 'ready' : 'down'}`
     ]);
