@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 
 import { resolveNextDevServerConfig } from './start-next-dev-config.mjs';
 
-test('未显式传入环境变量时应保持本地安全监听地址', () => {
+test('未显式传入环境变量时应默认监听 0.0.0.0:3200', () => {
   const result = resolveNextDevServerConfig({});
 
   assert.deepEqual(result, {
-    hostname: '127.0.0.1',
+    hostname: '0.0.0.0',
     port: '3200'
   });
 });

@@ -10,7 +10,7 @@ server.once('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EACCES') {
     console.error(
       '\x1b[33m%s\x1b[0m',
-      `  Permission denied. On this Windows machine, excluded TCP ranges can block nearby 30xx ports. The hardened local default is 127.0.0.1:3201.`
+      `  Permission denied. On this Windows machine, excluded TCP ranges can block nearby 30xx ports. You can override the listening host with HOST and the port with PORT.`
     );
   } else if (err.code === 'EADDRINUSE') {
     console.error('\x1b[33m%s\x1b[0m', `  Port ${port} is already in use by another process.`);

@@ -21,7 +21,7 @@ type AiAnalyzerEnvConfig = {
 };
 
 const DEFAULT_PORT = 3201;
-const DEFAULT_HOST = "127.0.0.1";
+const DEFAULT_HOST = "0.0.0.0";
 
 function parsePort(rawPort: string | undefined): number {
   if (!rawPort) {

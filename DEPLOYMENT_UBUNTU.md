@@ -1,194 +1,192 @@
-# SecuAI 智能防御系统 V3.0 - Ubuntu 24.04 部署指南
+# SecuAI Ubuntu 24 标准部署指南
 
-本指南适用于在 Ubuntu 24.04 LTS (虚拟机环境) 上从零开始部署 SecuAI 全栈平台。
+本文档对应当前仓库已经收口的 Ubuntu 生产部署主路径：
 
----
+- `docker compose` 负责 PostgreSQL / Redis
+- `PM2` 负责 API / Web 进程守护
+- `Nginx` 负责对外暴露 `80/443`
 
-## 1. 基础环境准备
+当前目标是提供统一、稳定、可重复的 Ubuntu 部署方式，而不是继续使用 `npm run dev:demo-stack` 对外服务。
 
-在开始之前，请确保您的虚拟机网络正常，并建议使用 `ssh` 连接到虚拟机操作。
+## 1. 安装基础依赖
 
-### 1.1 系统更新与基础工具
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y git curl wget ufw
-```
-
-### 1.2 安装 Docker & Docker Compose
-```bash
-sudo apt install -y docker.io docker-compose
-sudo usermod -aG docker $USER
-# 注：执行完 usermod 后，建议重新登录 SSH 以生效权限
-```
-
-### 1.3 安装 Node.js 20 & PM2
-```bash
-# 安装 Node.js 20 (NodeSource)
+sudo apt update
+sudo apt install -y git curl wget ufw nginx docker.io docker-compose
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-
-# 安装 PM2 进程管理器
 sudo npm install -g pm2
 ```
 
-### 1.4 安装 Python 3.12 (系统默认) & 虚拟环境
+如果当前用户尚未加入 `docker` 用户组：
+
 ```bash
-sudo apt install -y python3-venv python3-pip
+sudo usermod -aG docker "$USER"
 ```
 
----
+执行后重新登录一次 shell。
 
-## 2. 获取代码与配置
+## 2. 获取代码并安装依赖
 
-### 2.1 克隆仓库与安装依赖
 ```bash
-git clone https://github.com/your-repo/secuai-platform.git # 请替换为实际仓库地址
+git clone <你的仓库地址> secuai-platform
 cd secuai-platform
 npm install
 ```
 
-### 2.2 环境变量配置
-为简单起见，我们将配置环境变量以便服务能相互通信。
+## 3. 准备环境变量
 
-**获取虚拟机 IP:**
-```bash
-ip addr show eth0 | grep inet | awk '{ print $2 }' # 请根据实际网卡名(如 ens33)调整
-```
-*假设虚拟机 IP 为 `192.168.1.100`*
-
----
-
-## 3. 基础设施部署 (DB & Redis)
-
-我们使用项目根目录下的 `docker-compose.yml` 启动数据库。
+复制模板：
 
 ```bash
-# 启动容器
-docker-compose up -d
-
-# 检查容器状态
-docker ps
+cp .env.example .env
 ```
 
----
+生产部署推荐值：
 
-## 4. 各服务部署流程
-
-### 4.1 数据库初始化 (Migrations)
-```bash
-npm run db:schema --workspace @secuai/api
+```env
+POSTGRES_PORT=55432
+REDIS_PORT=6379
+HOST=127.0.0.1
+API_PORT=3201
+HOSTNAME=127.0.0.1
+WEB_PORT=3200
+DATABASE_URL=postgresql://secuai:secuai_dev_password@127.0.0.1:55432/secuai
+DB_SSL_MODE=disable
+API_URL=http://127.0.0.1:3201
+AI_ANALYZER_URL=http://127.0.0.1:8000
+AI_ANALYZER_TIMEOUT_MS=1500
+AI_ANALYZER_MAX_RETRIES=1
 ```
 
-### 4.2 AI 分析服务 (Python)
+说明：
+
+- `HOST` / `HOSTNAME` 设为 `127.0.0.1`，用于配合 Nginx 反向代理
+- 如果只是临时局域网联调，也可以改成 `0.0.0.0`
+- 如果 PostgreSQL 端口与宿主机已有服务冲突，可仅修改 `POSTGRES_PORT`
+
+## 4. 启动基础设施并构建生产产物
+
 ```bash
-# 进入服务目录
-cd services/ai-analyzer
-
-# 创建并激活虚拟环境
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 安装 Python 依赖
-pip install -r requirements.txt
-
-# 使用 PM2 启动服务
-pm2 start "uvicorn app.main:app --host 0.0.0.0 --port 8000" --name "secuai-ai"
-
-# 退出虚拟环境并返回根目录
-deactivate
-cd ../../
+npm run prod:prepare
 ```
 
-### 4.3 后端 API 服务 (Node.js)
-```bash
-# 构建 API
-npm run build --workspace @secuai/api
+该命令会自动完成：
 
-# 使用 PM2 启动
-# 设置必要的生产环境变量
-pm2 start apps/api/dist/main.js --name "secuai-api" -- \
-  --port 3201 \
-  --database-url "postgresql://secuai:secuai_dev_password@127.0.0.1:55432/secuai" \
-  --ai-analyzer-url "http://127.0.0.1:8000"
+1. 启动 `postgres` 与 `redis`
+2. 执行数据库 schema
+3. 构建 API
+4. 构建 Web
+
+## 5. 启动应用进程
+
+```bash
+npm run prod:start
 ```
 
-### 4.4 前端 Web 控制台 (Next.js)
+常用 PM2 命令：
+
 ```bash
-# 构建 Web
-npm run build --workspace @secuai/web
-
-# 使用 PM2 启动 (Next.js 标准启动命令)
-# HOSTNAME=0.0.0.0 确保外部可访问
-pm2 start "npm run start --workspace @secuai/web" --name "secuai-web" -- \
-  --port 3200 \
-  --api-url "http://127.0.0.1:3201"
-```
-
----
-
-## 5. 验证与运维
-
-### 5.1 查看服务状态
-```bash
+npm run prod:restart
+npm run prod:stop
+npm run prod:logs
 pm2 list
 ```
 
-### 5.2 查看日志
+仓库中的 PM2 模板：
+
+- `deploy/pm2/ecosystem.config.cjs`
+
+## 6. 配置 Nginx
+
+复制仓库内模板：
+
 ```bash
-pm2 logs secuai-api
-pm2 logs secuai-web
-pm2 logs secuai-ai
+sudo cp deploy/nginx/secuai.conf /etc/nginx/sites-available/secuai
+sudo ln -sf /etc/nginx/sites-available/secuai /etc/nginx/sites-enabled/secuai
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-### 5.3 健康检查
+模板文件：
+
+- `deploy/nginx/secuai.conf`
+
+反代约定：
+
+- `/` -> `127.0.0.1:3200`
+- `/api/` -> `127.0.0.1:3201`
+
+如果需要 HTTPS，建议后续再接 `certbot`；本轮仓库先收口 HTTP 标准入口。
+
+## 7. 放行防火墙
+
+推荐只放行 `80/443`，不直接暴露 `3200/3201`：
+
 ```bash
-# API 健康检查
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+sudo ufw status
+```
+
+## 8. 验证方式
+
+### 8.1 验证内部服务
+
+```bash
+npm run doctor:prod
 curl http://127.0.0.1:3201/health
-
-# AI 服务检查
-curl http://127.0.0.1:8000/health
+curl -I http://127.0.0.1:3200/login
 ```
 
-### 5.4 外部访问
-通过宿主机浏览器访问：
-- **Web 控制台**: `http://<虚拟机IP>:3200`
-- **默认登录**: 请参考项目中 `seeds` 或 README (通常包含 mock 账号)
-
----
-
-## 6. (可选) 配置 Nginx 反向代理
-
-如果您希望通过 80 端口直接访问：
+### 8.2 验证 Nginx
 
 ```bash
-sudo apt install -y nginx
+sudo nginx -t
+curl -I http://127.0.0.1/
+curl -I http://127.0.0.1/login
+curl http://127.0.0.1/api/v1/health || curl http://127.0.0.1/health
 ```
 
-创建配置 `/etc/nginx/sites-available/secuai`:
-```nginx
-server {
-    listen 80;
-    server_name _; # 或者您的域名
+说明：
 
-    location / {
-        proxy_pass http://127.0.0.1:3200; # Web
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
+- 当前 API 健康检查路径仍为 `http://127.0.0.1:3201/health`
+- 如果 Nginx 只转发 `/api/`，则外部访问 API 应走 `/api/...`
+- 如果当前站点只演示 Web 页面，可优先验证 `/login`
 
-    location /api/ {
-        proxy_pass http://127.0.0.1:3201/; # API
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-```bash
-sudo ln -s /etc/nginx/sites-available/secuai /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl restart nginx
+### 8.3 验证外部访问
+
+在宿主机或同网段机器访问：
+
+```text
+http://<Ubuntu_IP>/
+http://<Ubuntu_IP>/login
 ```
 
-> [!IMPORTANT]
-> **安全提醒**: 
-> 1. 请务必在生产环境修改 `docker-compose.yml` 中的数据库默认密码。
-> 2. 如果开启了 UFW 防火墙，请放行对应端口: `sudo ufw allow 3200/tcp && sudo ufw allow 3201/tcp && sudo ufw allow 80/tcp`。
+## 9. 故障排查顺序
+
+1. `npm run doctor:prod`
+2. `pm2 list`
+3. `pm2 logs secuai-api`
+4. `pm2 logs secuai-web`
+5. `sudo nginx -t`
+6. `sudo systemctl status nginx`
+7. `ss -lntp | grep -E '3200|3201|80|443'`
+
+## 10. 当前边界
+
+这套 Ubuntu 生产部署主路径已经适合：
+
+- 单机部署
+- 演示环境
+- 比赛 / 答辩环境
+- 小规模真实接入验证
+
+当前还没有覆盖：
+
+- HTTPS 自动签发与续期
+- 多节点部署
+- 高并发压测与容量规划
+- 完整网关化能力
