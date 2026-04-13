@@ -1,15 +1,12 @@
 # SecuAI Web 控制台
 
-`apps/web` 是 SecuAI 的 Next.js 管理后台，当前负责：
+`apps/web` 是 SecuAI 的 Next.js 管理后台。
 
-- 登录 / 注册
-- Dashboard
-- Attack Events
-- Event Detail
-- Policies
-- protection simulator
+如果你当前是要部署 Ubuntu 服务器，请先看总文档：
 
-## 本地开发
+- [Ubuntu 单机部署操作手册](../../DEPLOYMENT_UBUNTU.md)
+
+## 开发模式
 
 在仓库根目录执行：
 
@@ -22,32 +19,24 @@ npm run dev:web
 - `HOSTNAME=0.0.0.0`
 - `PORT=3200`
 
-常见联调变量：
+## 生产模式
 
-```bash
-HOSTNAME=127.0.0.1 PORT=3200 API_URL=http://127.0.0.1:3201 npm run dev:web
-```
-
-## 生产启动
-
-当前生产启动不再建议直接手敲 `next start`，而是统一通过：
+当前生产启动不建议手动直接敲 `next start`，而是统一从仓库根目录走：
 
 ```bash
 npm run prod:start
 ```
 
-PM2 会调用：
+PM2 最终会调用：
 
 ```bash
 npm run start --workspace @secuai/web
 ```
 
-仓库内部已将 `start` 收口为带 `HOSTNAME` / `PORT` 解析的生产启动脚本。
-
-Ubuntu 标准部署建议：
+Ubuntu 单机标准部署建议：
 
 - `HOSTNAME=127.0.0.1`
 - `PORT=3200`
 - `API_URL=http://127.0.0.1:3201`
 
-然后由 Nginx 将 `/` 反代到 `127.0.0.1:3200`。
+然后由 Nginx 将 `/` 与 `/_next/` 反向代理到 Web。
