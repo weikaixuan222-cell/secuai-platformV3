@@ -41,6 +41,12 @@ SecuAI 小微企业网站安全防护平台
 - `ai_risk_results` 幂等
 - `matchedBlockedEntity` 已贯通到判定、留痕、事件回看
 - `security_policies` / `blocked_entities` / `protection/check` 已闭环
+- 站点管理已具备最小可用闭环：
+  - 站点列表
+  - 新增站点
+  - 修改站点
+  - 删除站点
+  - 创建后下一步引导
 - `site-middleware` 已具备最小 enforcement 验证能力
 
 ### 2. 开发联调统一入口
@@ -75,17 +81,27 @@ SecuAI 小微企业网站安全防护平台
 ## 最新验证
 
 ### 本轮已完成
+- `npm test --workspace @secuai/api -- --test-name-pattern "站点管理闭环：可列出、修改并删除站点"`
 - `node --test apps/web/scripts/start-next-dev-config.test.mjs scripts/production-config.test.mjs`
 - `npm run build --workspace @secuai/api`
 - `npm run build --workspace @secuai/web`
+- `npm run typecheck --workspace @secuai/web`
+- Windows 本地真实联调：
+  - `/dashboard/sites` 可打开
+  - 新增站点可提交
+  - 编辑站点可保存
+  - 删除站点可确认并生效
+  - 成功反馈、字段错误和创建后下一步可见
 
 ### 本轮验证覆盖
 - Web 默认监听配置已改为环境变量可控并完成测试
 - 生产部署配置解析脚本已完成测试
 - API / Web 生产构建仍可通过
+- 站点管理最小闭环已在 Windows 本地完成真实 smoke
 
 ## 当前风险
 - 本轮未在真实 Ubuntu 主机上完成 `npm run prod:start` + `nginx` 联动实机验证
+- 本轮未在 Ubuntu 24 用户态环境中完成站点管理 smoke 实机复跑
 - AI analyzer 仍需单独按部署文档启动
 - HTTPS 证书、续期与多节点方案尚未收口
 - 当前标准部署仍以单机 Ubuntu 为边界

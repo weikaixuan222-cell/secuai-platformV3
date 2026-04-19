@@ -90,6 +90,31 @@ function PoliciesIcon() {
   );
 }
 
+function SitesIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 7.5L12 3L20 7.5V16.5L12 21L4 16.5V7.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M4 7.5L12 12L20 7.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 12V21"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -145,6 +170,17 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               <PoliciesIcon />
             </span>
             站点策略
+          </Link>
+          <Link
+            href="/dashboard/sites"
+            className={`${styles.navItem} ${
+              pathname.startsWith('/dashboard/sites') ? styles.active : ''
+            }`}
+          >
+            <span className={styles.navIcon}>
+              <SitesIcon />
+            </span>
+            站点接入
           </Link>
         </nav>
 

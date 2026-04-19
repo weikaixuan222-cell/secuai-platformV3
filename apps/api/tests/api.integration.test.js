@@ -221,6 +221,37 @@ async function createSite(token, tenantId, name, domain) {
   return response.json.data;
 }
 
+async function listSites(token, tenantId) {
+  const response = await apiRequest(`/api/v1/sites?tenantId=${tenantId}`, {
+    method: "GET",
+    token
+  });
+
+  assert.equal(response.status, 200);
+  return response.json.data.items;
+}
+
+async function updateSite(token, siteId, body) {
+  const response = await apiRequest(`/api/v1/sites/${siteId}`, {
+    method: "PUT",
+    token,
+    body
+  });
+
+  assert.equal(response.status, 200);
+  return response.json.data.site;
+}
+
+async function deleteSite(token, siteId) {
+  const response = await apiRequest(`/api/v1/sites/${siteId}`, {
+    method: "DELETE",
+    token
+  });
+
+  assert.equal(response.status, 200);
+  return response.json.data;
+}
+
 async function updateSecurityPolicy(token, siteId, body) {
   const response = await apiRequest(`/api/v1/sites/${siteId}/security-policy`, {
     method: "PUT",
@@ -359,6 +390,59 @@ async function provisionScenario() {
     sqlInjectionEventId: sqlInjectionEvent.id
   };
 }
+
+test("站点管理闭环：可列出、修改并删除站点", async () => {
+  const suffix = Date.now().toString();
+  const owner = await registerAndLogin(`site-manage-${suffix}@example.com`);
+  let tenantId = "";
+
+  try {
+    const tenant = await createTenant(owner.token, "Site Manage Tenant", `site-manage-${suffix}`);
+    tenantId = tenant.id;
+
+    const createdSite = await createSite(
+      owner.token,
+      tenant.id,
+      "Initial Site",
+      `site-manage-${suffix}.example.com`
+    );
+
+    const initialSites = await listSites(owner.token, tenant.id);
+    assert.equal(initialSites.length, 1);
+    assert.equal(initialSites[0].id, createdSite.site.id);
+    assert.equal(initialSites[0].name, "Initial Site");
+    assert.equal(initialSites[0].status, "active");
+
+    const updatedSite = await updateSite(owner.token, createdSite.site.id, {
+      name: "Updated Site",
+      domain: `updated-site-${suffix}.example.com`,
+      status: "inactive"
+    });
+
+    assert.equal(updatedSite.id, createdSite.site.id);
+    assert.equal(updatedSite.name, "Updated Site");
+    assert.equal(updatedSite.domain, `updated-site-${suffix}.example.com`);
+    assert.equal(updatedSite.status, "inactive");
+
+    const updatedSites = await listSites(owner.token, tenant.id);
+    assert.equal(updatedSites.length, 1);
+    assert.equal(updatedSites[0].name, "Updated Site");
+    assert.equal(updatedSites[0].status, "inactive");
+
+    const deletedSite = await deleteSite(owner.token, createdSite.site.id);
+    assert.equal(deletedSite.deleted, true);
+    assert.equal(deletedSite.site.id, createdSite.site.id);
+
+    const remainingSites = await listSites(owner.token, tenant.id);
+    assert.equal(remainingSites.length, 0);
+  } finally {
+    if (tenantId) {
+      await dbClient.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+    }
+
+    await dbClient.query(`DELETE FROM users WHERE email = $1`, [`site-manage-${suffix}@example.com`]);
+  }
+});
 
 before(async () => {
   dbClient = createDbClient();

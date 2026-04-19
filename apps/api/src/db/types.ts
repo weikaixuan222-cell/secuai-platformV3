@@ -205,6 +205,12 @@ export interface CreateSiteInput {
   status?: RecordStatus;
 }
 
+export interface UpdateSiteInput {
+  name: string;
+  domain: string;
+  status: RecordStatus;
+}
+
 export interface UpsertSecurityPolicyInput {
   siteId: string;
   mode: SecurityPolicyMode;

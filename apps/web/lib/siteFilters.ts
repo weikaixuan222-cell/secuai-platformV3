@@ -39,3 +39,13 @@ export function buildPoliciesPagePath(siteId: string): string {
   params.set('siteId', siteId);
   return `/dashboard/policies?${params.toString()}`;
 }
+
+export function buildSitesPagePath(siteId: string): string {
+  if (!siteId) {
+    return '/dashboard/sites';
+  }
+
+  const params = new URLSearchParams();
+  params.set('siteId', siteId);
+  return `/dashboard/sites?${params.toString()}`;
+}

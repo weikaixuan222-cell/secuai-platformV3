@@ -1,8 +1,8 @@
 # SecuAI Ubuntu 单机部署操作手册
 
-本文档基于当前仓库中已经存在并已接入的真实文件、真实脚本和真实模板编写，目标是让你在不依赖我代为操作的情况下，自己按步骤完成一台 Ubuntu 服务器上的标准部署。
+本文档基于当前仓库中已经存在并接入的真实脚本、真实模板和真实入口编写，目标是让你在 Ubuntu 几乎“空白机器”的前提下，也能按步骤自己完成部署。
 
-当前教程对应的仓库主路径如下：
+当前仓库中与 Ubuntu 生产部署直接相关的真实入口如下：
 
 - 生产准备：`npm run prod:prepare`
 - 生产启动：`npm run prod:start`
@@ -12,27 +12,31 @@
 - PM2 模板：`deploy/pm2/ecosystem.config.cjs`
 - Nginx 模板：`deploy/nginx/secuai.conf`
 
-如果后续脚本有变化，应以仓库当前文件为准，再回看本手册。
+如果后续仓库脚本发生变化，应以仓库当前文件为准，再回看本手册。
 
 ---
 
 ## 1. 部署目标与适用范围
 
-### 1.1 本教程适用范围
+### 1.1 适用范围
 
 本教程适用于：
 
-- Ubuntu 24 系列服务器
+- Ubuntu 24.04 LTS
 - 单机部署
 - 演示环境
-- 比赛 / 答辩环境
+- 答辩 / 比赛环境
 - 小规模真实接入验证环境
 
-本教程**不是**多节点部署手册，也不是完整网关或完整 WAF 的生产级运维手册。
+本教程不是：
 
-### 1.2 当前标准部署结构
+- 多节点部署手册
+- 完整网关部署手册
+- 完整 WAF 运维手册
 
-当前仓库推荐的 Ubuntu 对外访问方式是：
+### 1.2 当前推荐部署结构
+
+当前仓库推荐的 Ubuntu 对外访问结构如下：
 
 ```text
 浏览器 / 外部访问
@@ -42,17 +46,17 @@
   127.0.0.1:3200 (Web)
   127.0.0.1:3201 (API)
         ↓
-docker compose 提供 PostgreSQL / Redis
+docker compose 或 docker-compose 提供 PostgreSQL / Redis
 ```
 
 说明：
 
 - Nginx 负责对外暴露 `80/443`
-- Web 与 API 进程本身建议只监听本机地址
-- PostgreSQL / Redis 由 `docker compose` 提供
-- 当前 `prod:start` **不会自动启动 AI analyzer**
+- Web 和 API 建议只监听本机地址
+- PostgreSQL / Redis 由 Docker Compose 启动
+- 当前 `prod:start` 不会自动启动 AI analyzer
 
-### 1.3 开发模式与生产模式的区别
+### 1.3 开发模式和生产模式的区别
 
 开发联调入口：
 
@@ -60,13 +64,16 @@ docker compose 提供 PostgreSQL / Redis
 npm run dev:demo-stack
 ```
 
-它适合：
+适用：
 
 - 本地开发
 - 联调
 - 演示前快速验证
 
-它**不适合**长期作为 Ubuntu 对外服务入口。
+不适用：
+
+- 长期对外服务
+- Ubuntu 标准生产部署
 
 Ubuntu 生产部署入口：
 
@@ -75,7 +82,7 @@ npm run prod:prepare
 npm run prod:start
 ```
 
-它适合：
+适用：
 
 - 单机 Ubuntu 标准部署
 - 借助 PM2 做进程守护
@@ -83,27 +90,185 @@ npm run prod:start
 
 ---
 
-## 2. 前置条件
+## 2. 最短执行路径
 
-### 2.1 服务器要求
+如果你已经有一台可联网、带 sudo 权限的 Ubuntu 24 机器，并且只是想先把最短路径跑起来，顺序就是：
 
-建议至少准备：
+1. 完成“第 3 节 裸机 Ubuntu 初始准备”
+2. 完成“第 4 节 前置条件”和“第 5 节 仓库获取与目录准备”
+3. 执行“第 6 节 安装依赖”
+4. 按“第 7 节 环境变量配置”写好 `.env`
+5. 执行：
+
+```bash
+npm install
+npm run prod:prepare
+npm run prod:start
+```
+
+6. 按“第 10 节 Nginx 配置”启用反向代理
+7. 按“第 12 节 验证部署成功”检查是否 ready
+
+如果你当前是完全空白的 Ubuntu，直接从第 3 节开始看。
+
+---
+
+## 3. 裸机 Ubuntu 初始准备
+
+如果你的 Ubuntu 现在什么都没准备，请先做这一节。  
+不要一上来就执行仓库里的命令，因为你很可能会先遇到这些问题：
+
+- `git: command not found`
+- `curl: command not found`
+- `docker: command not found`
+- `docker compose: command not found`
+- `docker-compose: command not found`
+- `pm2: command not found`
+- `node: command not found`
+
+### 3.1 确认你当前有 sudo 权限
+
+```bash
+whoami
+sudo -v
+```
+
+### 3.2 更新软件源索引
+
+```bash
+sudo apt update
+```
+
+### 3.3 如果下载速度很慢，先切换 apt 软件源（可选）
+
+如果你执行 `apt update`、`apt install` 很慢，或者长时间卡在官方源，可以先换国内镜像源，再继续后面的安装步骤。
+
+当前更常见的是 Ubuntu 24.04，优先检查这个文件是否存在：
+
+```bash
+ls /etc/apt/sources.list.d/ubuntu.sources
+```
+
+如果文件存在，先看当前真实内容，不要直接假设它一定是 `archive.ubuntu.com`：
+
+```bash
+cat /etc/apt/sources.list.d/ubuntu.sources
+```
+
+很多机器里实际看到的可能是：
+
+- `http://archive.ubuntu.com/ubuntu/`
+- `http://us.archive.ubuntu.com/ubuntu/`
+- `https://archive.ubuntu.com/ubuntu/`
+- `http://security.ubuntu.com/ubuntu/`
+
+所以这里不要只替换单一地址，直接统一替换所有常见 Ubuntu 官方源域名。
+
+如果你想切到中科大源，按下面执行：
+
+```bash
+sudo cp /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak
+sudo sed -i 's|https\?://[a-zA-Z0-9.-]*archive.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g; s|https\?://security.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g' /etc/apt/sources.list.d/ubuntu.sources
+sudo apt clean
+sudo apt update
+```
+
+检查是否已生效：
+
+```bash
+cat /etc/apt/sources.list.d/ubuntu.sources
+```
+
+你应该看到 `URIs:` 已经统一变成：
+
+```text
+https://mirrors.ustc.edu.cn/ubuntu/
+```
+
+如果你更想用清华源，把上面命令中的地址替换成：
+
+```text
+https://mirrors.tuna.tsinghua.edu.cn/ubuntu/
+```
+
+注意：
+
+- 你在 `apt update` 里仍然看到一些 `us` 或其他国外地址，不一定代表 Ubuntu 系统源没改成功
+- 很多时候那是第三方源，例如 Docker、NodeSource 或其他额外仓库
+- Ubuntu 系统源是否改成功，优先看 `/etc/apt/sources.list.d/ubuntu.sources` 的 `URIs:` 内容
+
+如果你的机器没有 `/etc/apt/sources.list.d/ubuntu.sources`，而是旧格式的 `/etc/apt/sources.list`，先备份：
+
+```bash
+sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+```
+
+然后手动编辑 `/etc/apt/sources.list`，把其中的 Ubuntu 官方源替换成你要使用的镜像源，再执行：
+
+```bash
+sudo apt clean
+sudo apt update
+```
+
+说明：
+
+- 这一步是可选分支，只有当你发现官方源明显过慢时再做
+- 如果你已经能稳定下载软件包，可以跳过这一步
+- 换源只影响系统包下载，不影响仓库代码本身
+- 换 Ubuntu 系统源不会自动修改 Docker、NodeSource 等第三方源
+
+### 3.4 安装最基础的系统组件
+
+```bash
+sudo apt install -y ca-certificates gnupg lsb-release apt-transport-https software-properties-common
+```
+
+### 3.5 安装基础命令行工具
+
+```bash
+sudo apt install -y git curl wget unzip ufw
+```
+
+安装后检查：
+
+```bash
+git --version
+curl --version
+wget --version
+ufw version
+```
+
+### 3.6 建议补充排查工具
+
+```bash
+sudo apt install -y net-tools iproute2 dnsutils
+```
+
+### 3.7 建议确认系统时间
+
+```bash
+timedatectl
+```
+
+---
+
+## 4. 前置条件
+
+### 4.1 服务器要求
+
+建议至少：
 
 - 2 vCPU
 - 4 GB 内存
 - 20 GB 以上可用磁盘
 
-如果只是演示用途，配置可以更低；如果需要长期稳定运行，建议再留出日志、构建缓存和 Docker 数据卷空间。
-
-### 2.2 操作系统要求
+### 4.2 操作系统要求
 
 推荐：
 
 - Ubuntu 24.04 LTS
 
-本教程按 Ubuntu 24 写；如果你使用其他发行版，请自行调整包管理命令。
-
-### 2.3 软件版本要求
+### 4.3 软件版本要求
 
 建议版本：
 
@@ -114,16 +279,14 @@ npm run prod:start
 - PM2
 - Nginx
 
-### 2.4 PostgreSQL / Redis 的角色说明
+### 4.4 PostgreSQL / Redis 的角色
 
-当前仓库的标准路径里：
+当前仓库标准部署路径里：
 
-- PostgreSQL：存储业务数据
-- Redis：提供缓存 / 辅助运行能力
+- PostgreSQL：业务数据存储
+- Redis：缓存 / 运行辅助
 
-这两个服务默认由仓库根目录的 `docker-compose.yml` 启动。
-
-### 2.5 域名、端口、防火墙要求
+### 4.5 域名、端口、防火墙要求
 
 对外推荐只放行：
 
@@ -137,28 +300,20 @@ npm run prod:start
 - `55432`
 - `6379`
 
-如果你有域名，可在 Nginx 里把 `server_name _;` 改成你的域名；如果当前只是 IP 访问，也可以先保留 `_`。
-
 ---
 
-## 3. 仓库获取与目录准备
+## 5. 仓库获取与目录准备
 
-### 3.1 推荐部署目录
-
-建议在固定目录部署，例如：
+### 5.1 推荐部署目录
 
 ```bash
 mkdir -p /srv
 cd /srv
-git clone <你的仓库地址> secuai-platform
+git clone https://github.com/weikaixuan222-cell/secuai-platformV3 secuai-platform
 cd /srv/secuai-platform
 ```
 
-你也可以放到其他目录，但后续所有命令都要在仓库根目录执行。
-
-### 3.2 首次进入项目后的检查步骤
-
-进入项目后，先做这几步：
+### 5.2 首次进入项目后的检查
 
 ```bash
 pwd
@@ -166,30 +321,183 @@ ls
 cat package.json
 ```
 
-你应该至少能看到：
+---
 
-- `apps/`
-- `deploy/`
-- `scripts/`
-- `docker-compose.yml`
-- `package.json`
-- `DEPLOYMENT_UBUNTU.md`
+## 6. 安装依赖
 
-如果这些文件不在，说明你当前不在仓库根目录。
+### 6.1 安装系统依赖
+
+这一节只保留一条 Docker 主路径：
+
+- Ubuntu 24 统一优先使用 Docker 官方软件源
+- 统一安装 Compose V2，也就是 `docker compose`
+- 不再把旧版 `docker-compose` 1.x 作为正常安装路径
+
+先安装基础依赖：
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg nginx git wget ufw
+```
+
+再配置 Docker 官方软件源并安装 Docker Engine + Compose V2：
+
+```bash
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+安装后检查：
+
+```bash
+git --version
+curl --version
+nginx -v
+docker version
+docker compose version
+```
+
+### 6.2 如果提示 `无法定位软件包 docker-compose-plugin`
+
+有些 Ubuntu 环境里，即使你已经配置了 Docker 官方仓库，仍然可能遇到下面两类报错：
+
+```text
+E: 无法定位软件包 docker-compose-plugin
+软件包 docker-ce 没有可安装候选
+```
+
+说明当前机器没有正确识别 Docker 官方仓库，不要再退回旧版 `docker-compose` 1.x。
+
+先检查：
+
+```bash
+cat /etc/os-release
+cat /etc/apt/sources.list.d/docker.sources
+apt-cache policy docker-ce docker-compose-plugin
+sudo apt update
+```
+
+如果 `apt-cache policy` 看不到 `docker-ce` 和 `docker-compose-plugin` 的候选版本，直接切成传统的 `docker.list` 写法：
+
+```bash
+sudo rm -f /etc/apt/sources.list.d/docker.sources
+sudo tee /etc/apt/sources.list.d/docker.list > /dev/null <<EOF
+deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable
+EOF
+
+sudo apt update
+apt-cache policy docker-ce docker-compose-plugin
+```
+
+看到候选版本后，再安装：
+
+```bash
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+docker version
+docker compose version
+```
+
+### 6.3 如果 `docker-compose --version` 报 `No module named distutils`
+
+如果你看到类似报错：
+
+```text
+ModuleNotFoundError: No module named 'distutils'
+```
+
+这通常说明你装到了旧版 `docker-compose` 1.x。
+
+根因是 Ubuntu 24.04 默认使用 Python 3.12，而 Python 3.12 已移除 `distutils`，所以旧版 `docker-compose` 1.x 经常直接失效。
+
+处理方式是统一改回 Compose V2：
+
+```bash
+sudo apt remove -y docker-compose
+docker compose version
+```
+
+如果这时 `docker compose version` 仍然提示 `unknown command`，回到上一节，按 Docker 官方软件源重新安装 Compose V2。
+
+### 6.4 Docker Compose 当前推荐理解
+
+- Ubuntu 24 生产部署优先使用 `docker compose`
+- 当前仓库脚本虽然兼容 `docker-compose`
+- 但文档主路径不再引导你安装旧版 `docker-compose` 1.x
+- 你只需要保证 `docker compose version` 正常即可
+
+### 6.5 安装 Node.js 20
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+检查：
+
+```bash
+node -v
+npm -v
+```
+
+### 6.6 安装 PM2
+
+```bash
+sudo npm install -g pm2
+```
+
+检查：
+
+```bash
+pm2 -v
+```
+
+### 6.7 让当前用户可直接使用 Docker
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+执行后必须重新登录一次 shell。重新登录后检查：
+
+```bash
+docker ps
+docker compose version
+```
+
+### 6.8 安装 Node 依赖
+
+在仓库根目录执行：
+
+```bash
+npm install
+```
 
 ---
 
-## 4. 环境变量配置
+## 7. 环境变量配置
 
-### 4.1 从模板复制
+### 7.1 从模板复制
 
 ```bash
 cp .env.example .env
 ```
 
-### 4.2 推荐的生产环境写法
-
-当前 Ubuntu 单机标准部署，建议 `.env` 先按下面这组写：
+### 7.2 推荐的生产环境写法
 
 ```env
 POSTGRES_PORT=55432
@@ -210,52 +518,50 @@ AI_ANALYZER_TIMEOUT_MS=1500
 AI_ANALYZER_MAX_RETRIES=1
 ```
 
-### 4.3 每个关键环境变量的作用
+### 7.3 关键环境变量说明
 
 - `POSTGRES_PORT`
-  - Docker 映射到宿主机的 PostgreSQL 端口
+  - PostgreSQL 映射到宿主机的端口
   - 默认 `55432`
-  - 如果宿主机已有 PostgreSQL，占用冲突时可以改
 
 - `REDIS_PORT`
-  - Docker 映射到宿主机的 Redis 端口
+  - Redis 映射到宿主机的端口
   - 默认 `6379`
 
 - `HOST`
-  - API 服务监听地址
-  - 生产配合 Nginx 时建议 `127.0.0.1`
+  - API 监听地址
+  - 生产建议 `127.0.0.1`
 
 - `API_PORT`
-  - API 服务监听端口
-  - 当前固定标准值是 `3201`
+  - API 监听端口
+  - 当前标准值 `3201`
 
 - `HOSTNAME`
-  - Web 服务监听地址
-  - 生产配合 Nginx 时建议 `127.0.0.1`
+  - Web 监听地址
+  - 生产建议 `127.0.0.1`
 
 - `WEB_PORT`
-  - Web 服务监听端口
-  - 当前固定标准值是 `3200`
+  - Web 监听端口
+  - 当前标准值 `3200`
 
 - `DATABASE_URL`
   - API 连接 PostgreSQL 的地址
-  - 必须与你的 `POSTGRES_PORT` 保持一致
+  - 必须与 `POSTGRES_PORT` 保持一致
 
 - `DB_SSL_MODE`
   - 当前默认 `disable`
-  - 如果你后续改为外部数据库并要求 SSL，再按实际环境调整
 
 - `API_URL`
-  - Web 访问 API 时使用的内部地址
-  - 当前标准写法为 `http://127.0.0.1:3201`
+  - Web 调 API 时使用的内部地址
+  - 当前标准写法是 `http://127.0.0.1:3201`
 
 - `AI_ANALYZER_URL`
-  - API 调 AI analyzer 的地址
-  - 当前 `prod:start` 不负责把 analyzer 启起来
+  - API 调 AI analyzer 时使用的地址
+  - 当前生产入口不会自动启动 analyzer
 
-### 4.4 哪些值必须改，哪些值可以先不改
+### 7.4 哪些值必须确认
 
-通常必须确认的值：
+至少确认这些值：
 
 - `DATABASE_URL`
 - `HOST`
@@ -263,171 +569,63 @@ AI_ANALYZER_MAX_RETRIES=1
 - `API_URL`
 - `AI_ANALYZER_URL`
 
-通常可以保持默认的值：
-
-- `API_PORT=3201`
-- `WEB_PORT=3200`
-- `POSTGRES_PORT=55432`
-- `REDIS_PORT=6379`
-
-### 4.5 生产环境下 HOST / HOSTNAME 的推荐写法
-
-推荐生产写法：
+### 7.5 生产环境下 HOST / HOSTNAME 的推荐写法
 
 ```env
 HOST=127.0.0.1
 HOSTNAME=127.0.0.1
 ```
 
-原因：
+### 7.6 什么时候可以改成 0.0.0.0
 
-- Web / API 只对本机监听
-- 外部流量统一走 Nginx
-- 能减少服务直接裸露在公网的风险
+适合：
 
-### 4.6 什么时候可以用 0.0.0.0
-
-适用场景：
-
-- 临时局域网联调
-- 宿主机直接访问虚拟机应用
-- 暂时不用 Nginx，只想先确认服务能起来
+- 局域网联调
+- 虚拟机与宿主机联调
+- 临时排查网络问题
 
 风险：
 
-- Web / API 会直接对外网卡监听
-- 如果服务器安全组、防火墙配置不严，可能导致 `3200/3201` 被直接访问
+- 3200 / 3201 会直接绑定外网卡
 
-### 4.7 Web、API、数据库、Redis、AI analyzer 的配置关系
-
-关系如下：
+### 7.7 Web、API、数据库、Redis、AI analyzer 的关系
 
 ```text
 Web -> API_URL -> API
 API -> DATABASE_URL -> PostgreSQL
-API -> AI_ANALYZER_URL -> AI analyzer（可选依赖）
-docker compose -> PostgreSQL / Redis
+API -> AI_ANALYZER_URL -> AI analyzer
+docker compose / docker-compose -> PostgreSQL / Redis
 Nginx -> Web / API
 ```
 
-### 4.8 AI analyzer 的边界
+### 7.8 AI analyzer 的边界
 
-这轮标准部署主路径**没有**把 AI analyzer 自动纳入 `prod:start`。
+当前标准部署主路径没有把 AI analyzer 自动纳入：
 
-这意味着：
-
-- `npm run prod:prepare` 不会启动 AI analyzer
-- `npm run prod:start` 不会启动 AI analyzer
-- `doctor:prod` 当前也不检查 AI analyzer
-
-如果你当前目标只是把 Web / API / Nginx 标准部署跑通，可以先不启动 analyzer。  
-如果后续你要验证 AI 风险分析链路，再单独补 analyzer 的启动与健康检查。
+- `prod:prepare` 不会启动 AI analyzer
+- `prod:start` 不会启动 AI analyzer
+- `doctor:prod` 不会检查 AI analyzer
 
 ---
 
-## 5. 安装依赖
+## 8. 构建与生产准备
 
-### 5.1 安装系统依赖
-
-```bash
-sudo apt update
-sudo apt install -y git curl wget ufw nginx docker.io docker-compose
-```
-
-执行成功后，你可以用下面命令确认：
-
-```bash
-git --version
-curl --version
-docker --version
-docker-compose --version
-nginx -v
-```
-
-### 5.2 安装 Node.js 20
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-```
-
-检查版本：
-
-```bash
-node -v
-npm -v
-```
-
-预期：
-
-- `node -v` 应该是 `v20.x`
-
-### 5.3 安装 PM2
-
-```bash
-sudo npm install -g pm2
-```
-
-检查：
-
-```bash
-pm2 -v
-```
-
-### 5.4 让当前用户可直接执行 Docker
-
-```bash
-sudo usermod -aG docker "$USER"
-```
-
-执行后重新登录 shell，再检查：
-
-```bash
-docker ps
-```
-
-如果这里提示权限错误，说明当前 shell 还没重新登录。
-
-### 5.5 安装 Node 依赖
-
-在仓库根目录执行：
-
-```bash
-npm install
-```
-
-成功后，通常会看到依赖安装完成，没有 `npm ERR!` 即可。
-
----
-
-## 6. 构建与生产准备
-
-### 6.1 执行命令
+### 8.1 执行命令
 
 ```bash
 npm run prod:prepare
 ```
 
-### 6.2 这个命令会做什么
+### 8.2 这个命令会做什么
 
-当前脚本 `scripts/prepare-production-stack.mjs` 会按顺序执行：
+当前脚本会依次执行：
 
-1. 启动 `postgres` 与 `redis`
+1. 启动 `postgres` 和 `redis`
 2. 执行 `npm run db:schema --workspace @secuai/api`
 3. 构建 API
 4. 构建 Web
 
-### 6.3 成功标志
-
-你应该能看到类似输出：
-
-- `启动 PostgreSQL 与 Redis`
-- `执行数据库 schema`
-- `构建 API`
-- `构建 Web`
-- `生产构建准备完成`
-
-另外你还可以手动检查：
+### 8.3 成功标志
 
 ```bash
 docker ps
@@ -435,161 +633,97 @@ ls apps/api/dist
 ls apps/web/.next
 ```
 
-预期：
+### 8.4 如果失败，先看哪里
 
-- `docker ps` 中应有 `postgres`、`redis`
-- `apps/api/dist` 应存在
-- `apps/web/.next` 应存在
-
-### 6.4 如果失败，先看哪里
-
-先按下面顺序看：
-
-1. `docker ps`
-2. `cat .env`
-3. `npm run db:schema --workspace @secuai/api`
-4. `npm run build --workspace @secuai/api`
-5. `npm run build --workspace @secuai/web`
-
-常见原因：
-
-- Docker 没启动
-- `DATABASE_URL` 不匹配
-- 端口冲突
-- 依赖没装全
+```bash
+docker ps
+cat .env
+npm run db:schema --workspace @secuai/api
+npm run build --workspace @secuai/api
+npm run build --workspace @secuai/web
+```
 
 ---
 
-## 7. 生产启动
+## 9. 生产启动
 
-### 7.1 启动命令
+### 9.1 启动命令
 
 ```bash
 npm run prod:start
 ```
 
-当前根 `package.json` 实际调用的是：
+底层实际调用：
 
 ```bash
 pm2 start deploy/pm2/ecosystem.config.cjs
 ```
 
-### 7.2 PM2 当前负责什么
+### 9.2 PM2 当前负责什么
 
-PM2 模板 `deploy/pm2/ecosystem.config.cjs` 当前会启动：
+PM2 模板当前会启动：
 
 - `secuai-api`
 - `secuai-web`
 
-不会启动：
-
-- AI analyzer
-- Nginx
-- Docker 本身
-
-### 7.3 查看启动结果
+### 9.3 查看启动结果
 
 ```bash
 pm2 list
 ```
 
-预期：
-
-- 能看到 `secuai-api`
-- 能看到 `secuai-web`
-- 状态应为 `online`
-
-### 7.4 查看日志
-
-全部日志：
+### 9.4 查看日志
 
 ```bash
 npm run prod:logs
-```
-
-单独查看 API：
-
-```bash
 pm2 logs secuai-api
-```
-
-单独查看 Web：
-
-```bash
 pm2 logs secuai-web
 ```
 
-### 7.5 重启与停止
+### 9.5 重启与停止
 
 ```bash
 npm run prod:restart
 npm run prod:stop
 ```
 
-### 7.6 确认端口监听
+### 9.6 确认端口监听
 
 ```bash
 ss -lntp | grep -E '3200|3201'
 ```
 
-生产推荐预期：
-
-- `127.0.0.1:3200`
-- `127.0.0.1:3201`
-
-如果你用了 `0.0.0.0`，则可能显示：
-
-- `0.0.0.0:3200`
-- `0.0.0.0:3201`
-
-### 7.7 可选：让 PM2 开机自启
-
-如果你希望重启服务器后自动恢复 PM2 进程，可以执行：
+### 9.7 PM2 开机自启
 
 ```bash
 pm2 startup
 pm2 save
 ```
 
-`pm2 startup` 会输出一条需要你复制执行的命令，按提示执行即可。
-
-说明：
-
-- 这一步是 PM2 通用能力
-- 当前仓库没有额外封装这一步
-- 这一步属于人工操作
-
 ---
 
-## 8. Nginx 配置
+## 10. Nginx 配置
 
-### 8.1 复制并启用模板
+### 10.1 复制并启用模板
 
 ```bash
 sudo cp deploy/nginx/secuai.conf /etc/nginx/sites-available/secuai
 sudo ln -sf /etc/nginx/sites-available/secuai /etc/nginx/sites-enabled/secuai
 ```
 
-### 8.2 禁用默认站点
+### 10.2 禁用默认站点
 
 ```bash
 sudo rm -f /etc/nginx/sites-enabled/default
 ```
 
-### 8.3 测试配置
+### 10.3 测试配置
 
 ```bash
 sudo nginx -t
 ```
 
-预期：
-
-```text
-syntax is ok
-test is successful
-```
-
-### 8.4 重载 Nginx
+### 10.4 重载 Nginx
 
 ```bash
 sudo systemctl reload nginx
@@ -602,17 +736,13 @@ sudo systemctl enable nginx
 sudo systemctl start nginx
 ```
 
-### 8.5 当前反向代理规则
-
-当前模板 `deploy/nginx/secuai.conf` 的关键约定是：
+### 10.5 当前反向代理规则
 
 - `/api/` -> `127.0.0.1:3201`
 - `/` -> `127.0.0.1:3200`
 - `/_next/` -> `127.0.0.1:3200`
 
-### 8.6 如果你要绑定域名
-
-编辑：
+### 10.6 如果要配域名
 
 ```bash
 sudo nano /etc/nginx/sites-available/secuai
@@ -630,33 +760,31 @@ server_name _;
 server_name your-domain.com www.your-domain.com;
 ```
 
-然后执行：
+然后：
 
 ```bash
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### 8.7 如果你要走 HTTPS
+### 10.7 HTTPS 当前覆盖边界
 
 当前仓库已覆盖：
 
 - HTTP 反向代理模板
-- Web / API 的本机监听方案
+- Web / API 本机监听方案
 
-当前**尚未收口**：
+当前尚未覆盖：
 
 - HTTPS 证书签发
 - 自动续期
-- 强制 HTTP -> HTTPS 跳转
-
-如果你现在要上 HTTPS，建议后续单独接 `certbot`。这不属于当前仓库脚本已覆盖的部分。
+- HTTP -> HTTPS 跳转
 
 ---
 
-## 9. 防火墙与安全建议
+## 11. 防火墙与安全建议
 
-### 9.1 推荐只放行的端口
+### 11.1 推荐只放行的端口
 
 ```bash
 sudo ufw allow 80/tcp
@@ -665,49 +793,33 @@ sudo ufw enable
 sudo ufw status
 ```
 
-### 9.2 不建议直接暴露的端口
-
-不建议直接对公网放行：
+### 11.2 不建议直接暴露的端口
 
 - `3200`
 - `3201`
 - `55432`
 - `6379`
 
-### 9.3 为什么生产建议监听 127.0.0.1
-
-生产建议：
+### 11.3 为什么生产建议监听 127.0.0.1
 
 ```env
 HOST=127.0.0.1
 HOSTNAME=127.0.0.1
 ```
 
-原因：
-
-- Web / API 只接受本机流量
-- 外部流量统一经 Nginx
-- 可以减少直接暴露内部服务的风险
-
-### 9.4 允许 0.0.0.0 的场景与风险
+### 11.4 什么时候允许 0.0.0.0
 
 适合：
 
 - 临时排查
-- 虚拟机与宿主机联调
+- 虚拟机和宿主机联调
 - 不走 Nginx 的短时验证
-
-风险：
-
-- 应用直接绑定外网卡
-- 3200/3201 可能被外部直接访问
-- 更依赖安全组和防火墙配置正确
 
 ---
 
-## 10. 验证部署成功
+## 12. 验证部署成功
 
-### 10.1 本机先验证内部服务
+### 12.1 本机先验证内部服务
 
 ```bash
 npm run doctor:prod
@@ -715,24 +827,13 @@ curl http://127.0.0.1:3201/health
 curl -I http://127.0.0.1:3200/login
 ```
 
-如果成功，通常应看到：
-
-- `doctor:prod` 提示 API 与 Web ready
-- `curl http://127.0.0.1:3201/health` 返回 JSON
-- `curl -I http://127.0.0.1:3200/login` 返回 `200` 或 `307/308`
-
-### 10.2 验证 PM2 进程
+### 12.2 验证 PM2 进程
 
 ```bash
 pm2 list
 ```
 
-应看到：
-
-- `secuai-api` 为 `online`
-- `secuai-web` 为 `online`
-
-### 10.3 验证 Nginx 反代
+### 12.3 验证 Nginx 反代
 
 ```bash
 sudo nginx -t
@@ -740,45 +841,29 @@ curl -I http://127.0.0.1/
 curl -I http://127.0.0.1/login
 ```
 
-预期：
-
-- Nginx 配置校验成功
-- `/` 与 `/login` 能返回正常响应头
-
-### 10.4 验证外部访问
-
-在同网段机器或宿主机访问：
+### 12.4 验证外部访问
 
 ```text
 http://<Ubuntu_IP>/
 http://<Ubuntu_IP>/login
 ```
 
-如果你已经配置了域名：
+### 12.5 什么情况算成功
 
-```text
-http://your-domain.com/
-http://your-domain.com/login
-```
-
-### 10.5 什么情况算部署成功
-
-至少满足以下条件：
+至少满足：
 
 1. `npm run prod:prepare` 成功
 2. `npm run prod:start` 成功
-3. `pm2 list` 里 `secuai-api` / `secuai-web` 为 `online`
+3. `pm2 list` 中 API / Web 为 `online`
 4. `npm run doctor:prod` 通过
 5. `sudo nginx -t` 通过
 6. 浏览器能打开 `/login`
 
 ---
 
-## 11. 常见问题排查
+## 13. 常见问题排查
 
-### 11.1 `prod:prepare` 失败
-
-先查：
+### 13.1 `prod:prepare` 失败
 
 ```bash
 docker ps
@@ -793,10 +878,12 @@ npm run build --workspace @secuai/web
 - `.env` 中 `DATABASE_URL` 错误
 - PostgreSQL 端口冲突
 - 依赖未安装完成
+- `docker compose` 未安装
+- `docker-compose` 未安装
+- 当前用户没有 Docker 权限
+- 机器还是裸机状态，缺少必要组件
 
-### 11.2 `prod:start` 失败
-
-先查：
+### 13.2 `prod:start` 失败
 
 ```bash
 pm2 list
@@ -805,48 +892,23 @@ pm2 logs secuai-web
 cat .env
 ```
 
-重点看：
-
-- `HOST` / `HOSTNAME`
-- `PORT`
-- `API_URL`
-- `DATABASE_URL`
-
-### 11.3 PM2 启动失败
-
-先确认：
+### 13.3 PM2 启动失败
 
 ```bash
 pm2 -v
 node -v
 npm -v
-```
-
-再确认 PM2 模板是否能正常加载：
-
-```bash
 node -e "const config=require('./deploy/pm2/ecosystem.config.cjs'); console.log(config.apps.map((app)=>app.name))"
 ```
 
-### 11.4 Nginx 配置错误
-
-先执行：
+### 13.4 Nginx 配置错误
 
 ```bash
 sudo nginx -t
-```
-
-再看：
-
-```bash
 sudo systemctl status nginx
 ```
 
-如果是域名或模板修改后出错，先把 `/etc/nginx/sites-available/secuai` 与仓库模板对照检查。
-
-### 11.5 `80/443` 无法访问
-
-按顺序查：
+### 13.5 80/443 无法访问
 
 ```bash
 sudo ufw status
@@ -854,14 +916,7 @@ ss -lntp | grep -E '80|443'
 sudo systemctl status nginx
 ```
 
-再确认：
-
-- 云服务器安全组是否放行 `80/443`
-- 你访问的 IP / 域名是否正确
-
-### 11.6 `3200/3201` 监听异常
-
-执行：
+### 13.6 3200/3201 监听异常
 
 ```bash
 ss -lntp | grep -E '3200|3201'
@@ -870,76 +925,33 @@ pm2 logs secuai-api
 pm2 logs secuai-web
 ```
 
-常见原因：
-
-- 端口被旧进程占用
-- `HOST` / `HOSTNAME` 设置不符合预期
-- Web / API 构建未完成
-
-### 11.7 环境变量没生效
-
-先确认 `.env` 是否真的在仓库根目录：
+### 13.7 环境变量没生效
 
 ```bash
 pwd
 ls -a
 cat .env
-```
-
-再执行：
-
-```bash
 npm run prod:restart
 ```
 
-原因：
-
-- PM2 进程已存在时，仅修改 `.env` 不会自动刷新旧环境变量
-- 需要执行 `prod:restart`，其底层会带 `--update-env`
-
-### 11.8 数据库或 Redis 未就绪
-
-执行：
+### 13.8 数据库或 Redis 未就绪
 
 ```bash
 docker ps
-docker compose ps
-```
-
-再检查：
-
-```bash
+docker compose ps || docker-compose ps
 ss -lntp | grep -E '55432|6379'
 ```
 
-必要时重跑：
+### 13.9 `doctor:prod` 报错
 
-```bash
-npm run prod:prepare
-```
-
-### 11.9 `doctor:prod` 报错
-
-先看报错提示，它已经按以下顺序检查：
+当前按顺序检查：
 
 1. PostgreSQL
 2. Redis
 3. API `/health`
 4. Web `/login`
 
-处理顺序建议：
-
-```bash
-docker ps
-pm2 list
-pm2 logs secuai-api
-pm2 logs secuai-web
-cat .env
-```
-
-### 11.10 页面能打开但 API 不通
-
-先查：
+### 13.10 页面能打开但 API 不通
 
 ```bash
 curl http://127.0.0.1:3201/health
@@ -948,19 +960,97 @@ pm2 logs secuai-api
 pm2 logs secuai-web
 ```
 
-再确认：
+### 13.11 `docker-compose` 报 `No module named distutils`
 
-- Web 的 `API_URL` 是否仍指向 `http://127.0.0.1:3201`
-- Nginx `/api/` 规则是否存在
-- 你访问的是 Web 页面还是直接打 API 路径
+如果你执行：
+
+```bash
+docker-compose --version
+```
+
+看到类似报错：
+
+```text
+ModuleNotFoundError: No module named 'distutils'
+```
+
+说明你装到了旧版 `docker-compose` 1.x。
+
+在 Ubuntu 24 上，不建议继续修这个旧版本，而是直接改成 Compose V2：
+
+```bash
+sudo apt remove -y docker-compose
+docker compose version
+```
+
+如果这里仍然提示：
+
+```text
+docker: unknown command: docker compose
+```
+
+说明你的机器还没有 Compose V2 插件。
+回到第 `6.2` 节，切换到 Docker 官方软件源并安装：
+
+- `docker-ce`
+- `docker-ce-cli`
+- `containerd.io`
+- `docker-buildx-plugin`
+- `docker-compose-plugin`
+
+### 13.12 `docker-ce` 没有可安装候选
+
+如果你执行：
+
+```bash
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+看到类似报错：
+
+```text
+没有可用的软件包 docker-ce
+软件包 docker-ce 没有可安装候选
+无法定位软件包 docker-compose-plugin
+```
+
+说明 Docker 官方仓库没有被当前机器正确识别。
+
+先检查：
+
+```bash
+cat /etc/os-release
+cat /etc/apt/sources.list.d/docker.sources
+apt-cache policy docker-ce docker-compose-plugin
+sudo apt update
+```
+
+如果 `apt-cache policy` 看不到候选版本，改用传统 `docker.list`：
+
+```bash
+sudo rm -f /etc/apt/sources.list.d/docker.sources
+sudo tee /etc/apt/sources.list.d/docker.list > /dev/null <<EOF
+deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable
+EOF
+
+sudo apt update
+apt-cache policy docker-ce docker-compose-plugin
+```
+
+确认已经看到候选版本后，再执行安装：
+
+```bash
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+docker version
+docker compose version
+```
 
 ---
 
-## 12. 更新与维护
+## 14. 更新与维护
 
-### 12.1 代码更新后的标准流程
-
-在仓库根目录执行：
+### 14.1 代码更新后的标准流程
 
 ```bash
 git pull
@@ -969,7 +1059,7 @@ npm run prod:prepare
 npm run prod:restart
 ```
 
-如果改动涉及 Nginx 模板，也要同步：
+如果 Nginx 模板也改了：
 
 ```bash
 sudo cp deploy/nginx/secuai.conf /etc/nginx/sites-available/secuai
@@ -977,37 +1067,30 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### 12.2 重新构建
+### 14.2 重新构建
 
 ```bash
 npm run prod:prepare
 ```
 
-### 12.3 平滑重启
+### 14.3 平滑重启
 
 ```bash
 npm run prod:restart
 ```
 
-### 12.4 查看运行状态
+### 14.4 查看运行状态
 
 ```bash
 pm2 list
 npm run doctor:prod
 ```
 
-### 12.5 回滚边界说明
+### 14.5 回滚边界
 
-当前仓库**没有**提供一键自动回滚脚本。
+当前仓库没有一键回滚脚本。
 
-当前可行的最小回滚方式通常是：
-
-1. 切回最近可用提交
-2. 重新安装依赖
-3. 重新构建
-4. 重启 PM2
-
-例如：
+最小回滚方式通常是：
 
 ```bash
 git log --oneline -n 5
@@ -1017,37 +1100,31 @@ npm run prod:prepare
 npm run prod:restart
 ```
 
-注意：
-
-- 这只是代码层回滚
-- 数据库结构如果已经发生变化，当前仓库没有单独提供完整数据库回滚方案
-- 所以真正上线前，仍建议你自己做代码版本与数据库备份
-
 ---
 
-## 13. 哪些步骤已经被脚本覆盖
+## 15. 已被脚本覆盖的步骤
 
-当前仓库脚本已覆盖：
+当前脚本已覆盖：
 
-- `docker compose` 启动 PostgreSQL / Redis
+- `docker compose` 或 `docker-compose` 启动 PostgreSQL / Redis
 - 数据库 schema 执行
 - API / Web 构建
 - PM2 启动与重启
 - API / Web ready 检查
 
-具体脚本入口：
+入口：
 
 - `npm run prod:prepare`
 - `npm run prod:start`
 - `npm run prod:restart`
 - `npm run doctor:prod`
 
-## 14. 哪些步骤仍需要人工执行
+## 16. 仍需人工执行的步骤
 
-当前仍需要你手工完成：
+当前仍需手工完成：
 
-- 安装系统依赖
-- 安装 Node.js / PM2 / Docker / Nginx
+- 裸机 Ubuntu 基础组件安装
+- Node.js / Docker / PM2 / Nginx 安装
 - 复制并编辑 `.env`
 - 复制并启用 Nginx 配置
 - 配置域名
@@ -1056,18 +1133,19 @@ npm run prod:restart
 - 配置 PM2 开机自启
 - 真实外部访问验证
 
-## 15. 尚未实机验证的边界
+## 17. 尚未实机验证的边界
 
-以下内容当前文档已按仓库真实脚本编写，但**尚未在真实 Ubuntu 24 服务器上完成整套实机验证**：
+以下内容已按仓库真实脚本编写，但尚未在真实 Ubuntu 24 服务器上完成整套实机验证：
 
-- `npm run prod:start` + `Nginx` + 外部浏览器访问的完整闭环
+- `prod:start` + Nginx + 外部浏览器访问闭环
 - 域名场景下的 Nginx 使用
 - HTTPS 接入流程
 - AI analyzer 与当前标准生产入口的联动
 
-因此：
+因此这份文档是：
 
-- 本文档当前是“基于仓库真实文件的详细可执行手册”
-- 但不应声称“已完成 Ubuntu 24 全链路实机验证”
+- 基于仓库真实入口的详细操作手册
 
-如果你准备实机部署，建议严格按本手册跑一遍，并记录你机器上的实际差异。
+但不是：
+
+- “已完成 Ubuntu 24 全链路实机验证”的最终发布手册

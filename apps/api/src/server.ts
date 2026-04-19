@@ -13,6 +13,7 @@ import type {
   BlockedEntitySource,
   BlockedEntityType,
   CreateRequestLogInput,
+  RecordStatus,
   RequestLogListFilters,
   RequestLogRow,
   RiskLevel,
@@ -28,6 +29,7 @@ import {
   createSite,
   createUserSession,
   deleteBlockedEntityById,
+  deleteSiteById,
   deleteExpiredUserSessions,
   deleteUserSessionByTokenHash,
   findAttackEventById,
@@ -45,8 +47,10 @@ import {
   listRecentHighRiskEvents,
   listRequestLogs,
   listSiteDashboardSummaries,
+  listSitesByTenant,
   listTenantMembershipsByUserId,
   touchUserSession,
+  updateSiteById,
   updateUserLastLoginAt,
   upsertSecurityPolicy
 } from "./repositories/index.js";
@@ -700,6 +704,18 @@ function mapRequestLog(requestLog: RequestLogRow): JsonObject {
   };
 }
 
+function mapSite(site: SiteRow): JsonObject {
+  return {
+    id: site.id,
+    tenantId: site.tenant_id,
+    name: site.name,
+    domain: site.domain,
+    status: site.status,
+    createdAt: site.created_at.toISOString(),
+    updatedAt: site.updated_at.toISOString()
+  };
+}
+
 async function evaluateSiteProtectionForBody(
   request: IncomingMessage,
   body: JsonObject
@@ -965,15 +981,95 @@ async function handleCreateSite(request: IncomingMessage, response: ServerRespon
   });
 
   sendSuccess(response, 201, {
-    site: {
-      id: site.id,
-      tenantId: site.tenant_id,
-      name: site.name,
-      domain: site.domain,
-      status: site.status,
-      createdAt: site.created_at.toISOString()
-    },
+    site: mapSite(site),
     ingestionKey
+  });
+}
+
+async function handleListSites(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL
+): Promise<void> {
+  const auth = await requireAuth(request);
+  const tenantId = url.searchParams.get("tenantId");
+
+  if (!tenantId) {
+    throw new ApiError(400, "VALIDATION_ERROR", "tenantId query parameter is required.");
+  }
+
+  assertTenantAccess(auth, tenantId);
+
+  const items = await listSitesByTenant(tenantId);
+
+  sendSuccess(response, 200, {
+    items: items.map(mapSite)
+  });
+}
+
+async function handleUpdateSite(
+  request: IncomingMessage,
+  response: ServerResponse,
+  siteId: string
+): Promise<void> {
+  const auth = await requireAuth(request);
+  const site = await requireSiteAccess(auth, siteId);
+  const body = expectObject(await readJsonBody(request), "body");
+  const name = getTrimmedString(body, "name", { minLength: 2, maxLength: 120 })!;
+  const domain = parseDomain(getTrimmedString(body, "domain", { minLength: 4, maxLength: 255 })!);
+  const statusValue = getTrimmedString(body, "status", { minLength: 6, maxLength: 8 })!;
+  const status: RecordStatus =
+    statusValue === "active" || statusValue === "inactive"
+      ? statusValue
+      : (() => {
+          throw new ApiError(
+            400,
+            "VALIDATION_ERROR",
+            "status must be one of: active, inactive."
+          );
+        })();
+
+  const updatedSite = await updateSiteById(site.id, {
+    name,
+    domain,
+    status
+  }).catch((error: unknown) => {
+    if (typeof error === "object" && error && "code" in error && error.code === "23505") {
+      throw new ApiError(
+        409,
+        "SITE_DOMAIN_ALREADY_EXISTS",
+        "This domain already exists inside the tenant."
+      );
+    }
+
+    throw error;
+  });
+
+  if (!updatedSite) {
+    throw new ApiError(404, "SITE_NOT_FOUND", "Site not found.");
+  }
+
+  sendSuccess(response, 200, {
+    site: mapSite(updatedSite)
+  });
+}
+
+async function handleDeleteSite(
+  request: IncomingMessage,
+  response: ServerResponse,
+  siteId: string
+): Promise<void> {
+  const auth = await requireAuth(request);
+  const site = await requireSiteAccess(auth, siteId);
+  const deletedSite = await deleteSiteById(site.id);
+
+  if (!deletedSite) {
+    throw new ApiError(404, "SITE_NOT_FOUND", "Site not found.");
+  }
+
+  sendSuccess(response, 200, {
+    deleted: true,
+    site: mapSite(deletedSite)
   });
 }
 
@@ -1894,6 +1990,10 @@ const server = createServer(async (request, response) => {
     request.method === "GET" || request.method === "POST"
       ? /^\/api\/v1\/sites\/([0-9a-fA-F-]{36})\/blocked-entities$/.exec(url.pathname)
       : null;
+  const siteDetailMatch =
+    request.method === "PUT" || request.method === "DELETE"
+      ? /^\/api\/v1\/sites\/([0-9a-fA-F-]{36})$/.exec(url.pathname)
+      : null;
   const deleteBlockedEntityMatch =
     request.method === "DELETE"
       ? /^\/api\/v1\/blocked-entities\/(\d+)$/.exec(url.pathname)
@@ -1934,6 +2034,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/api/v1/sites") {
+      await handleListSites(request, response, url);
+      return;
+    }
+
     if (matchesRoute(request, "POST", "/api/v1/protection/check")) {
       await handleProtectionCheck(request, response);
       return;
@@ -1971,6 +2076,24 @@ const server = createServer(async (request, response) => {
         request,
         response,
         parseUuidPathParam(siteBlockedEntitiesMatch[1], "id")
+      );
+      return;
+    }
+
+    if (siteDetailMatch && request.method === "PUT") {
+      await handleUpdateSite(
+        request,
+        response,
+        parseUuidPathParam(siteDetailMatch[1], "id")
+      );
+      return;
+    }
+
+    if (siteDetailMatch && request.method === "DELETE") {
+      await handleDeleteSite(
+        request,
+        response,
+        parseUuidPathParam(siteDetailMatch[1], "id")
       );
       return;
     }

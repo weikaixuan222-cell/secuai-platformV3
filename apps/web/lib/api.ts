@@ -49,19 +49,13 @@ export function getRequiredTenantId(): string {
   const tenantId = getTenantId();
 
   if (!tenantId) {
-    throw new ApiError(
-      '租户上下文缺失，请重新登录。',
-      'TENANT_CONTEXT_MISSING'
-    );
+    throw new ApiError('租户上下文缺失，请重新登录。', 'TENANT_CONTEXT_MISSING');
   }
 
   return tenantId;
 }
 
-export function buildApiPath(
-  pathname: string,
-  query: object = {}
-): string {
+export function buildApiPath(pathname: string, query: object = {}): string {
   const searchParams = new URLSearchParams();
 
   for (const [key, value] of Object.entries(query) as Array<[string, QueryValue]>) {
@@ -83,16 +77,16 @@ export async function fetchApi<T>(
   const token = getAuthToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string>),
+    ...(options.headers as Record<string, string>)
   };
 
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+    headers.Authorization = `Bearer ${token}`;
   }
 
   const response = await fetch(endpoint, {
     ...options,
-    headers,
+    headers
   });
 
   const data = await response.json();
