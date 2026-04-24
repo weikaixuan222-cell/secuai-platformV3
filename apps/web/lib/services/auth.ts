@@ -7,19 +7,19 @@ function normalizeEmail(email: string): string {
 
 function validateEmail(email: string): void {
   if (email.length < 5 || !email.includes('@')) {
-    throw new ApiError('Please enter a valid email address.', 'VALIDATION_ERROR');
+    throw new ApiError('请输入有效的邮箱地址。', 'VALIDATION_ERROR');
   }
 }
 
 function validatePassword(password: string): void {
   if (password.length < 8) {
-    throw new ApiError('Password must be at least 8 characters.', 'VALIDATION_ERROR');
+    throw new ApiError('密码至少需要 8 个字符。', 'VALIDATION_ERROR');
   }
 }
 
 function validateDisplayName(displayName: string): void {
   if (displayName.length < 2) {
-    throw new ApiError('Display name must be at least 2 characters.', 'VALIDATION_ERROR');
+    throw new ApiError('显示名称至少需要 2 个字符。', 'VALIDATION_ERROR');
   }
 }
 

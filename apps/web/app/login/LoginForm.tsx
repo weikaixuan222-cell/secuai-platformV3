@@ -14,6 +14,43 @@ type LoginFormProps = {
   showReturnToNotice?: boolean;
 };
 
+function getLoginErrorMessage(error: unknown): string {
+  const err = error as { code?: unknown; message?: unknown };
+  const code = typeof err?.code === 'string' ? err.code : '';
+  const message = typeof err?.message === 'string' ? err.message.trim() : '';
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    code === 'UNAUTHORIZED' ||
+    normalizedMessage.includes('invalid credentials') ||
+    normalizedMessage.includes('invalid email or password') ||
+    normalizedMessage.includes('incorrect password') ||
+    normalizedMessage.includes('unauthorized')
+  ) {
+    return '登录失败，邮箱地址或密码不正确。';
+  }
+
+  if (code === 'VALIDATION_ERROR') {
+    if (normalizedMessage.includes('email')) {
+      return '请输入有效的邮箱地址。';
+    }
+
+    if (normalizedMessage.includes('password')) {
+      return '密码至少需要 8 个字符。';
+    }
+  }
+
+  if (!message) {
+    return '登录失败，请检查邮箱地址和密码后重试。';
+  }
+
+  if (/^[\x00-\x7F\s.,:;!?'"()/-]+$/.test(message)) {
+    return '登录失败，请检查邮箱地址和密码后重试。';
+  }
+
+  return message;
+}
+
 export default function LoginForm({
   initialEmail = '',
   showRegistrationSuccess = false,
@@ -56,8 +93,8 @@ export default function LoginForm({
 
       setAuthData(token, tenantId);
       router.push(normalizeReturnToPath(returnTo));
-    } catch (err: any) {
-      setError(err.message || '登录失败，请检查邮箱地址和密码后重试。');
+    } catch (err: unknown) {
+      setError(getLoginErrorMessage(err));
     } finally {
       setLoading(false);
     }
