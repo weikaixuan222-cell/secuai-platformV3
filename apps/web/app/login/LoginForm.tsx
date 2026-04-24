@@ -3,17 +3,22 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
 import { setAuthData } from '@/lib/api';
+import { normalizeReturnToPath } from '@/lib/authPaths';
 import { loginWithPassword } from '@/lib/services';
 import styles from './login.module.css';
 
 type LoginFormProps = {
   initialEmail?: string;
   showRegistrationSuccess?: boolean;
+  returnTo?: string;
+  showReturnToNotice?: boolean;
 };
 
 export default function LoginForm({
   initialEmail = '',
-  showRegistrationSuccess = false
+  showRegistrationSuccess = false,
+  returnTo = '',
+  showReturnToNotice = false
 }: LoginFormProps) {
   const router = useRouter();
   const [hydrated, setHydrated] = useState(false);
@@ -50,7 +55,7 @@ export default function LoginForm({
       }
 
       setAuthData(token, tenantId);
-      router.push('/dashboard/events');
+      router.push(normalizeReturnToPath(returnTo));
     } catch (err: any) {
       setError(err.message || '登录失败，请检查邮箱地址和密码后重试。');
     } finally {
@@ -73,6 +78,17 @@ export default function LoginForm({
           data-testid="login-success-alert"
         >
           注册成功，系统已为你创建默认租户。下一步登录后即可进入控制台，再继续创建站点并接入日志。
+        </div>
+      ) : null}
+
+      {showReturnToNotice ? (
+        <div
+          className={`${styles.statusAlert} ${styles.successAlert}`}
+          role="status"
+          aria-live="polite"
+          data-testid="login-return-to-alert"
+        >
+          登录后将返回你刚才访问的控制台页面。
         </div>
       ) : null}
 

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { isSafeDashboardReturnToPath } from '@/lib/authPaths';
 import LoginForm from './LoginForm';
 import styles from './login.module.css';
 
@@ -11,12 +12,15 @@ type LoginPageProps = {
   searchParams?: {
     registered?: string;
     email?: string;
+    returnTo?: string;
   };
 };
 
 export default function LoginPage({ searchParams }: LoginPageProps) {
   const initialEmail = typeof searchParams?.email === 'string' ? searchParams.email : '';
   const showRegistrationSuccess = searchParams?.registered === '1';
+  const returnTo = typeof searchParams?.returnTo === 'string' ? searchParams.returnTo : '';
+  const showReturnToNotice = isSafeDashboardReturnToPath(returnTo);
 
   return (
     <main className={styles.container}>
@@ -49,6 +53,8 @@ export default function LoginPage({ searchParams }: LoginPageProps) {
         <LoginForm
           initialEmail={initialEmail}
           showRegistrationSuccess={showRegistrationSuccess}
+          returnTo={returnTo}
+          showReturnToNotice={showReturnToNotice}
         />
       </div>
     </main>

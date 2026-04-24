@@ -119,9 +119,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  const handleLogout = () => {
-    clearAuthData();
-    router.push('/login');
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST'
+      });
+    } finally {
+      clearAuthData();
+      router.push('/login');
+    }
   };
 
   return (

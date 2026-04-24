@@ -49,7 +49,7 @@ export function loginWithPassword(payload: LoginRequest): Promise<LoginResponse>
   validateEmail(email);
   validatePassword(password);
 
-  return fetchApi<LoginResponse>('/api/v1/auth/login', {
+  return fetchApi<LoginResponse>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({
       email,

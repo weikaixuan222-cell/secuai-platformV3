@@ -114,16 +114,11 @@ async function bootstrapSmokeData() {
   const authHeaders = {
     Authorization: `Bearer ${token}`
   };
+  const tenantId = loginData.memberships?.[0]?.tenantId;
 
-  const tenantData = await requestJson(`${API_BASE_URL}/api/v1/tenants`, {
-    method: 'POST',
-    headers: authHeaders,
-    body: JSON.stringify({
-      name: `Smoke Tenant ${suffix}`,
-      slug: `smoke-${suffix}`
-    })
-  });
-  const tenantId = tenantData.tenant.id;
+  if (!tenantId) {
+    throw new Error('Smoke login did not return a tenant membership.');
+  }
 
   const firstSite = await createSite(
     authHeaders,
@@ -190,6 +185,8 @@ async function bootstrapSmokeData() {
   }
 
   return {
+    email,
+    password,
     token,
     tenantId,
     firstSiteId: firstSite.siteId,
@@ -439,6 +436,44 @@ async function createCdpClient(wsUrl) {
   };
 }
 
+async function setInputValue(client, selector, value) {
+  const updated = await client.evaluate(`(() => {
+    const input = document.querySelector(${JSON.stringify(selector)});
+
+    if (!input) {
+      return false;
+    }
+
+    const prototype = Object.getPrototypeOf(input);
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+    descriptor?.set?.call(input, ${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+
+  if (!updated) {
+    throw new Error(`Input not found: ${selector}`);
+  }
+}
+
+async function clickElement(client, selector) {
+  const clicked = await client.evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+
+    if (!element) {
+      return false;
+    }
+
+    element.click();
+    return true;
+  })()`);
+
+  if (!clicked) {
+    throw new Error(`Element not found: ${selector}`);
+  }
+}
+
 async function runBrowserSmoke(context, chromeDebugPort) {
   const client = await createCdpClient(await openCdpTarget(chromeDebugPort));
   await client.init();
@@ -451,6 +486,7 @@ async function runBrowserSmoke(context, chromeDebugPort) {
   });
 
   const firstListPath = `/dashboard/events?siteId=${encodeURIComponent(context.firstSiteId)}&eventType=sql_injection`;
+  const firstListPathLiteral = JSON.stringify(firstListPath);
   const firstDetailPath = `/dashboard/events/${context.firstAttackEventId}?siteId=${encodeURIComponent(context.firstSiteId)}&eventType=sql_injection`;
   const firstDetailProbePath = `${firstDetailPath}&detailRouteErrorProbe=1&detailRouteErrorProbeId=${DETAIL_ROUTE_ERROR_PROBE_ID}`;
   const invalidDetailPath = `/dashboard/events/%20?siteId=${encodeURIComponent(context.firstSiteId)}&eventType=sql_injection`;
@@ -467,8 +503,26 @@ async function runBrowserSmoke(context, chromeDebugPort) {
     url: `${WEB_BASE_URL}${firstListPath}`
   });
   await client.waitFor(
-    `Boolean(document.querySelector('a[href="${firstDetailPath}"]')) && Array.from(document.querySelectorAll('select'))[0]?.value === '${context.firstSiteId}' && Array.from(document.querySelectorAll('select'))[1]?.value === 'sql_injection'`
+    `location.pathname === '/login' &&
+     new URLSearchParams(location.search).get('returnTo') === ${firstListPathLiteral} &&
+     Boolean(document.querySelector('[data-testid="login-return-to-alert"]')) &&
+     document.querySelector('[data-testid="login-form"]')?.dataset.hydrated === 'true'`
   );
+
+  const authRedirectState = await client.evaluate(`(() => ({
+    loginUrl: location.pathname + location.search,
+    returnTo: new URLSearchParams(location.search).get('returnTo') || '',
+    noticeText: document.querySelector('[data-testid="login-return-to-alert"]')?.textContent?.trim() || ''
+  }))()`);
+
+  await setInputValue(client, '[data-testid="login-email-input"]', context.email);
+  await setInputValue(client, '[data-testid="login-password-input"]', context.password);
+  await clickElement(client, '[data-testid="login-submit-button"]');
+
+  await client.waitFor(
+    `location.pathname + location.search === ${firstListPathLiteral} && Boolean(document.querySelector('a[href="${firstDetailPath}"]')) && Array.from(document.querySelectorAll('select'))[0]?.value === '${context.firstSiteId}' && Array.from(document.querySelectorAll('select'))[1]?.value === 'sql_injection'`
+  );
+  const webOrigin = await client.evaluate('location.origin');
 
   const firstListState = await client.evaluate(`(() => {
     const selects = Array.from(document.querySelectorAll('select'));
@@ -655,7 +709,7 @@ async function runBrowserSmoke(context, chromeDebugPort) {
   // END UI BLOCK IP TEST
 
   await client.send('Page.navigate', {
-    url: `${WEB_BASE_URL}${firstDetailProbePath}`
+    url: `${webOrigin}${firstDetailProbePath}`
   });
   await client.waitFor(
     `document.querySelector('[data-testid="event-detail-route-error-state"]')?.getAttribute('role') === 'alert' && document.querySelector('[data-testid="event-detail-route-error-retry"]')?.textContent?.includes('重试打开事件详情页') && document.querySelector('[data-testid="event-detail-route-error-retry"]')?.disabled === false`
@@ -715,7 +769,7 @@ async function runBrowserSmoke(context, chromeDebugPort) {
   })()`);
 
   await client.send('Page.navigate', {
-    url: `${WEB_BASE_URL}${invalidDetailPath}`
+    url: `${webOrigin}${invalidDetailPath}`
   });
   await client.waitFor(
     `Boolean(document.querySelector('[data-testid="event-detail-invalid-id-state"]')) && document.querySelector('[data-testid="event-detail-back-link"]')?.getAttribute('href') === '${firstListPath}'`
@@ -753,7 +807,7 @@ async function runBrowserSmoke(context, chromeDebugPort) {
   })()`);
 
   await client.send('Page.navigate', {
-    url: `${WEB_BASE_URL}${secondListPath}`
+    url: `${webOrigin}${secondListPath}`
   });
   await client.waitFor(
     `new URLSearchParams(location.search).get('siteId') === '${context.secondSiteId}' && Array.from(document.querySelectorAll('select'))[1]?.value === 'xss_payload' && Boolean(document.querySelector('a[href*="siteId=${context.secondSiteId}"][href*="eventType=xss_payload"]'))`
@@ -771,7 +825,7 @@ async function runBrowserSmoke(context, chromeDebugPort) {
   })()`);
 
   await client.send('Page.navigate', {
-    url: `${WEB_BASE_URL}${dashboardPath}`
+    url: `${webOrigin}${dashboardPath}`
   });
   await client.waitFor(
     `document.querySelector('#dashboard-site-filter')?.value === '${context.firstSiteId}' && document.querySelector('[data-testid="dashboard-filter-form"]')?.getAttribute('aria-busy') === 'false'`
@@ -819,10 +873,50 @@ async function runBrowserSmoke(context, chromeDebugPort) {
     })()`);
   }
 
+  await clickElement(client, 'button[class*="logoutButton"]');
+  await client.waitFor(`location.pathname === '/login'`);
+
+  await client.send('Page.navigate', {
+    url: `${webOrigin}/dashboard/events`
+  });
+  await client.waitFor(
+    `location.pathname === '/login' &&
+     new URLSearchParams(location.search).get('returnTo') === '/dashboard/events'`
+  );
+
+  const logoutRedirectState = await client.evaluate(`(() => ({
+    loginUrl: location.pathname + location.search,
+    returnTo: new URLSearchParams(location.search).get('returnTo') || ''
+  }))()`);
+
+  const unsafeReturnToStates = [];
+
+  for (const unsafeReturnTo of ['https://example.com', '//example.com', 'javascript:alert(1)']) {
+    await client.send('Page.navigate', {
+      url: `${webOrigin}/login?returnTo=${encodeURIComponent(unsafeReturnTo)}`
+    });
+    await client.waitFor(
+      `location.pathname === '/login' &&
+       document.querySelector('[data-testid="login-form"]')?.dataset.hydrated === 'true' &&
+       !document.querySelector('[data-testid="login-return-to-alert"]')`
+    );
+    await setInputValue(client, '[data-testid="login-email-input"]', context.email);
+    await setInputValue(client, '[data-testid="login-password-input"]', context.password);
+    await clickElement(client, '[data-testid="login-submit-button"]');
+    await client.waitFor(`location.pathname === '/dashboard/events' && location.search === ''`);
+
+    unsafeReturnToStates.push(await client.evaluate(`(() => ({
+      attemptedReturnTo: ${JSON.stringify(unsafeReturnTo)},
+      finalUrl: location.pathname + location.search,
+      hasReturnToNotice: Boolean(document.querySelector('[data-testid="login-return-to-alert"]'))
+    }))()`));
+  }
+
   client.assertNoBrowserErrors();
   client.close();
 
   return {
+    authRedirectState,
     firstListState,
     autoRefreshState,
     refreshFailureState,
@@ -837,11 +931,24 @@ async function runBrowserSmoke(context, chromeDebugPort) {
     invalidDetailReturnState,
     secondListState,
     dashboardFilterState,
-    dashboardDetailState
+    dashboardDetailState,
+    logoutRedirectState,
+    unsafeReturnToStates
   };
 }
 
 function assertSmokeState(result, context) {
+  if (
+    result.authRedirectState.returnTo !==
+      `/dashboard/events?siteId=${encodeURIComponent(context.firstSiteId)}&eventType=sql_injection` ||
+    !result.authRedirectState.loginUrl.startsWith('/login?returnTo=') ||
+    !result.authRedirectState.noticeText.includes('登录后将返回')
+  ) {
+    throw new Error(
+      `Protected dashboard returnTo smoke failed: ${JSON.stringify(result.authRedirectState)}`
+    );
+  }
+
   if (
     result.firstListState.siteSelectValue !== context.firstSiteId ||
     result.firstListState.siteSelectAriaDisabled !== 'false' ||
@@ -1024,6 +1131,26 @@ function assertSmokeState(result, context) {
   ) {
     throw new Error(
       `Block IP related-event node smoke failed: ${JSON.stringify(result.blockIpActionState)}`
+    );
+  }
+
+  if (
+    result.logoutRedirectState.returnTo !== '/dashboard/events' ||
+    !result.logoutRedirectState.loginUrl.startsWith('/login?returnTo=')
+  ) {
+    throw new Error(
+      `Logout cookie clearing smoke failed: ${JSON.stringify(result.logoutRedirectState)}`
+    );
+  }
+
+  if (
+    result.unsafeReturnToStates.length !== 3 ||
+    result.unsafeReturnToStates.some(
+      (state) => state.finalUrl !== '/dashboard/events' || state.hasReturnToNotice
+    )
+  ) {
+    throw new Error(
+      `Unsafe returnTo fallback smoke failed: ${JSON.stringify(result.unsafeReturnToStates)}`
     );
   }
 }
