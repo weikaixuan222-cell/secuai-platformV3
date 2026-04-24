@@ -12,6 +12,7 @@ const DEFAULT_CHROME_DEBUG_PORT = 9222;
 const STRICT_MODE =
   process.argv.includes('--strict') || process.env.SECUAI_SMOKE_STRICT === '1';
 const DETAIL_ROUTE_ERROR_PROBE_ID = `detail-route-probe-${Date.now()}`;
+const AUTO_REFRESH_WAIT_MS = 12_000;
 
 function isExpectedBrowserErrorLog(message) {
   return (
@@ -192,6 +193,8 @@ async function bootstrapSmokeData() {
     token,
     tenantId,
     firstSiteId: firstSite.siteId,
+    firstSiteDomain: firstSite.siteDomain,
+    firstSiteIngestionKey: firstSite.ingestionKey,
     firstAttackEventId: String(firstAttackEvent.id),
     secondSiteId: secondSite.siteId,
     secondAttackEventId: String(secondAttackEvent.id),
@@ -204,6 +207,70 @@ async function bootstrapSmokeData() {
       : null,
     dashboardCardSkipReason
   };
+}
+
+async function waitForGeneratedAttackEvent(context, previousEventIds) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < 10_000) {
+    const data = await requestJson(
+      `${API_BASE_URL}/api/v1/attack-events?tenantId=${context.tenantId}&siteId=${context.firstSiteId}&eventType=sql_injection&limit=20`,
+      {
+        headers: {
+          Authorization: `Bearer ${context.token}`
+        }
+      }
+    );
+    const newEvent = data.items?.find((item) => !previousEventIds.has(String(item.id)));
+
+    if (newEvent) {
+      return String(newEvent.id);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw new Error('Timed out waiting for newly generated attack event.');
+}
+
+async function generateAutoRefreshAttackEvent(context) {
+  const beforeData = await requestJson(
+    `${API_BASE_URL}/api/v1/attack-events?tenantId=${context.tenantId}&siteId=${context.firstSiteId}&eventType=sql_injection&limit=20`,
+    {
+      headers: {
+        Authorization: `Bearer ${context.token}`
+      }
+    }
+  );
+  const previousEventIds = new Set(
+    (beforeData.items || []).map((item) => String(item.id))
+  );
+  const suffix = Date.now();
+
+  await reportRequestLog(
+    {
+      siteId: context.firstSiteId,
+      siteDomain: context.firstSiteDomain,
+      ingestionKey: context.firstSiteIngestionKey
+    },
+    {
+      path: `/auto-refresh-${suffix}`,
+      queryString: `id=1 UNION SELECT token FROM sessions WHERE marker=${suffix}`
+    }
+  );
+
+  await requestJson(`${API_BASE_URL}/api/v1/detection/run`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${context.token}`
+    },
+    body: JSON.stringify({
+      tenantId: context.tenantId,
+      limit: 100
+    })
+  });
+
+  return waitForGeneratedAttackEvent(context, previousEventIds);
 }
 
 async function openCdpTarget(chromeDebugPort) {
@@ -243,8 +310,13 @@ async function createCdpClient(wsUrl) {
       pending.delete(payload.id);
 
       if (payload.error) {
+        const commandLabel = request.method
+          ? `${request.method} ${JSON.stringify(request.params || {}).slice(0, 500)}`
+          : 'unknown CDP command';
         request.reject(
-          new Error(payload.error.message || JSON.stringify(payload.error))
+          new Error(
+            `${payload.error.message || JSON.stringify(payload.error)}; command=${commandLabel}`
+          )
         );
         return;
       }
@@ -303,7 +375,7 @@ async function createCdpClient(wsUrl) {
     ws.send(JSON.stringify({ id, method, params }));
 
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      pending.set(id, { resolve, reject, method, params });
       setTimeout(() => {
         if (!pending.has(id)) {
           return;
@@ -425,6 +497,116 @@ async function runBrowserSmoke(context, chromeDebugPort) {
       clearAriaBusy: clearButton?.getAttribute('aria-busy') || ''
     };
   })()`);
+
+  const autoRefreshAttackEventId = await generateAutoRefreshAttackEvent(context);
+  const autoRefreshDetailPath = `/dashboard/events/${autoRefreshAttackEventId}?siteId=${encodeURIComponent(context.firstSiteId)}&eventType=sql_injection`;
+
+  await client.waitFor(
+    `Boolean(document.querySelector('a[href="${autoRefreshDetailPath}"]'))`,
+    AUTO_REFRESH_WAIT_MS
+  );
+
+  const autoRefreshState = await client.evaluate(`(() => {
+    const statusPanel = document.querySelector('[data-testid="events-auto-refresh-status"]');
+    const refreshButton = document.querySelector('[data-testid="events-refresh-now"]');
+    const detailLink = document.querySelector('a[href="${autoRefreshDetailPath}"]');
+
+    return {
+      generatedAttackEventId: '${autoRefreshAttackEventId}',
+      statusText: statusPanel?.textContent || '',
+      detailHref: detailLink?.getAttribute('href') || '',
+      rowCountAfterAutoRefresh: document.querySelectorAll('table tbody tr').length,
+      refreshButtonDisabled: refreshButton?.disabled ?? true,
+      refreshButtonBusy: refreshButton?.getAttribute('aria-busy') || ''
+    };
+  })()`);
+
+  await client.evaluate(`void (() => {
+    const originalFetch = window.fetch.bind(window);
+    let shouldFailNextAttackEventsRequest = true;
+
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+
+      if (
+        shouldFailNextAttackEventsRequest &&
+        url.includes('/api/v1/attack-events')
+      ) {
+        shouldFailNextAttackEventsRequest = false;
+        return Promise.resolve(new Response(JSON.stringify({
+          success: false,
+          error: {
+            code: 'SMOKE_REFRESH_FAILURE',
+            message: 'smoke forced refresh failure'
+          }
+        }), {
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }));
+      }
+
+      return originalFetch(input, init);
+    };
+
+    window.__restoreSecuaiSmokeFetch = () => {
+      window.fetch = originalFetch;
+    };
+  })()`);
+  await client.evaluate(
+    `document.querySelector('[data-testid="events-refresh-now"]')?.click()`
+  );
+  await client.waitFor(
+    `document.querySelector('[data-testid="events-auto-refresh-status"]')?.textContent?.includes('最近一次刷新失败') && document.querySelectorAll('table tbody tr').length >= ${autoRefreshState.rowCountAfterAutoRefresh}`
+  );
+
+  const refreshFailureState = await client.evaluate(`(() => {
+    const statusPanel = document.querySelector('[data-testid="events-auto-refresh-status"]');
+    const refreshButton = document.querySelector('[data-testid="events-refresh-now"]');
+
+    return {
+      statusText: statusPanel?.textContent || '',
+      rowCountAfterFailure: document.querySelectorAll('table tbody tr').length,
+      refreshButtonDisabled: refreshButton?.disabled ?? true
+    };
+  })()`);
+
+  await client.evaluate(`void window.__restoreSecuaiSmokeFetch?.()`);
+  await client.evaluate(
+    `document.querySelector('[data-testid="events-refresh-now"]')?.click()`
+  );
+  await client.waitFor(
+    `!document.querySelector('[data-testid="events-auto-refresh-status"]')?.textContent?.includes('最近一次刷新失败') && Boolean(document.querySelector('a[href="${autoRefreshDetailPath}"]'))`
+  );
+
+  await client.evaluate(`void (() => {
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  })()`);
+  await client.waitFor(
+    `document.querySelector('[data-testid="events-auto-refresh-status"]')?.textContent?.includes('已暂停')`
+  );
+  const refreshPausedState = await client.evaluate(`(() => ({
+    statusText: document.querySelector('[data-testid="events-auto-refresh-status"]')?.textContent || ''
+  }))()`);
+
+  await client.evaluate(`void (() => {
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => false
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  })()`);
+  await client.waitFor(
+    `document.querySelector('[data-testid="events-auto-refresh-status"]')?.textContent?.includes('自动刷新') && Boolean(document.querySelector('a[href="${autoRefreshDetailPath}"]'))`
+  );
+  const refreshVisibleState = await client.evaluate(`(() => ({
+    statusText: document.querySelector('[data-testid="events-auto-refresh-status"]')?.textContent || ''
+  }))()`);
 
   await client.evaluate(
     `document.querySelector('a[href="${firstDetailPath}"]')?.click()`
@@ -642,6 +824,10 @@ async function runBrowserSmoke(context, chromeDebugPort) {
 
   return {
     firstListState,
+    autoRefreshState,
+    refreshFailureState,
+    refreshPausedState,
+    refreshVisibleState,
     detailState,
     blockIpActionState,
     detailRouteErrorState,
@@ -673,6 +859,39 @@ function assertSmokeState(result, context) {
     result.firstListState.clearAriaBusy !== 'false'
   ) {
     throw new Error(`First site list filter smoke failed: ${JSON.stringify(result.firstListState)}`);
+  }
+
+  if (
+    result.autoRefreshState.detailHref !==
+      `/dashboard/events/${result.autoRefreshState.generatedAttackEventId}?siteId=${encodeURIComponent(context.firstSiteId)}&eventType=sql_injection` ||
+    result.autoRefreshState.rowCountAfterAutoRefresh <= result.firstListState.rowCount ||
+    result.autoRefreshState.refreshButtonDisabled ||
+    result.autoRefreshState.refreshButtonBusy !== 'false' ||
+    !result.autoRefreshState.statusText.includes('自动刷新')
+  ) {
+    throw new Error(`Auto-refresh smoke failed: ${JSON.stringify(result.autoRefreshState)}`);
+  }
+
+  if (
+    !result.refreshFailureState.statusText.includes('最近一次刷新失败') ||
+    result.refreshFailureState.rowCountAfterFailure < result.autoRefreshState.rowCountAfterAutoRefresh ||
+    result.refreshFailureState.refreshButtonDisabled
+  ) {
+    throw new Error(
+      `Refresh failure retention smoke failed: ${JSON.stringify(result.refreshFailureState)}`
+    );
+  }
+
+  if (
+    !result.refreshPausedState.statusText.includes('已暂停') ||
+    !result.refreshVisibleState.statusText.includes('自动刷新')
+  ) {
+    throw new Error(
+      `Visibility refresh state smoke failed: ${JSON.stringify({
+        paused: result.refreshPausedState,
+        visible: result.refreshVisibleState
+      })}`
+    );
   }
 
   if (

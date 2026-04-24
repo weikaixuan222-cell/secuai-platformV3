@@ -38,6 +38,21 @@ import SiteFilterSelect from '../components/SiteFilterSelect';
 import StatePanelCard from '../components/StatePanelCard';
 import styles from './events.module.css';
 
+const AUTO_REFRESH_INTERVAL_MS = 5_000;
+
+function formatRefreshTime(value: Date): string {
+  return value.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 export default function EventsPage() {
   const router = useRouter();
   const [filters, setFilters] = useState<EventFiltersState>(DEFAULT_EVENT_FILTERS);
@@ -48,10 +63,23 @@ export default function EventsPage() {
   const [events, setEvents] = useState<AttackEventListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [backgroundRefreshError, setBackgroundRefreshError] = useState<string | null>(
+    null
+  );
+
+  const loadEventList = useCallback(async (nextFilters: EventFiltersState) => {
+    const eventData = await listAttackEvents(buildAttackEventsQuery(nextFilters));
+    setEvents(eventData.items || []);
+    setLastUpdatedAt(new Date());
+  }, []);
 
   const loadEvents = useCallback(async (nextFilters: EventFiltersState) => {
     setLoading(true);
     setError(null);
+    setBackgroundRefreshError(null);
     setAppliedFilters(nextFilters);
 
     const validationError = getEventFilterValidationError(nextFilters);
@@ -71,13 +99,39 @@ export default function EventsPage() {
 
       setSiteOptions(buildSiteFilterOptions(summaryData.items));
       setEvents(eventData.items || []);
-    } catch (err: any) {
+      setLastUpdatedAt(new Date());
+    } catch (err) {
       setEvents([]);
-      setError(err.message || '攻击事件加载失败，请稍后重试。');
+      setError(getErrorMessage(err, '攻击事件加载失败，请稍后重试。'));
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const refreshAttackEvents = useCallback(
+    async (nextFilters: EventFiltersState) => {
+      const validationError = getEventFilterValidationError(nextFilters);
+
+      if (validationError) {
+        setBackgroundRefreshError(validationError);
+        return;
+      }
+
+      setRefreshing(true);
+      setBackgroundRefreshError(null);
+
+      try {
+        await loadEventList(nextFilters);
+      } catch (err) {
+        setBackgroundRefreshError(
+          getErrorMessage(err, '后台刷新失败，请稍后重试。')
+        );
+      } finally {
+        setRefreshing(false);
+      }
+    },
+    [loadEventList]
+  );
 
   useEffect(() => {
     const syncFromUrl = () => {
@@ -93,6 +147,38 @@ export default function EventsPage() {
       window.removeEventListener('popstate', syncFromUrl);
     };
   }, [loadEvents]);
+
+  useEffect(() => {
+    const syncVisibility = () => {
+      const nextIsVisible = !document.hidden;
+      setIsPageVisible(nextIsVisible);
+
+      if (nextIsVisible && !loading && !refreshing) {
+        void refreshAttackEvents(appliedFilters);
+      }
+    };
+
+    setIsPageVisible(!document.hidden);
+    document.addEventListener('visibilitychange', syncVisibility);
+
+    return () => {
+      document.removeEventListener('visibilitychange', syncVisibility);
+    };
+  }, [appliedFilters, loading, refreshing, refreshAttackEvents]);
+
+  useEffect(() => {
+    if (!isPageVisible || loading || refreshing) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshAttackEvents(appliedFilters);
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [appliedFilters, isPageVisible, loading, refreshing, refreshAttackEvents]);
 
   const applyFilters = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -157,6 +243,22 @@ export default function EventsPage() {
 
     return `当前 URL 对应“${currentSiteName}”，已匹配 ${events.length} 条事件。`;
   }, [currentSiteName, events.length, hasPendingChanges, loading]);
+
+  const refreshStatusText = useMemo(() => {
+    if (!isPageVisible) {
+      return '已暂停，页面重新可见时会立即补拉最新事件。';
+    }
+
+    if (refreshing) {
+      return '自动刷新中，正在按已应用筛选条件拉取最新事件。';
+    }
+
+    return '自动刷新已开启，每 5 秒按已应用筛选条件拉取一次。';
+  }, [isPageVisible, refreshing]);
+
+  const lastUpdatedText = lastUpdatedAt
+    ? `最后更新 ${formatRefreshTime(lastUpdatedAt)}`
+    : '等待首次更新';
 
   return (
     <div className={styles.container}>
@@ -383,6 +485,50 @@ export default function EventsPage() {
           </div>
         </div>
       </form>
+
+      <section
+        className={`glass-panel ${styles.refreshPanel}`}
+        aria-label="攻击事件自动刷新状态"
+        data-testid="events-auto-refresh-status"
+      >
+        <div className={styles.refreshCopy}>
+          <div className={styles.refreshHeadingRow}>
+            <span
+              className={`${styles.refreshDot} ${
+                isPageVisible ? styles.refreshDotActive : styles.refreshDotPaused
+              }`}
+              aria-hidden="true"
+            />
+            <p className={styles.refreshTitle}>攻击事件自动刷新</p>
+          </div>
+          <p className={styles.refreshStatus} role="status" aria-live="polite">
+            {refreshStatusText}
+          </p>
+          {backgroundRefreshError ? (
+            <p className={styles.refreshError} role="alert">
+              最近一次刷新失败：{backgroundRefreshError}
+            </p>
+          ) : (
+            <p className={styles.refreshHint}>
+              后台生成新攻击事件后，保持页面打开等待几秒即可看到更新。
+            </p>
+          )}
+        </div>
+        <div className={styles.refreshActions}>
+          <span className={styles.refreshTime}>{lastUpdatedText}</span>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={() => refreshAttackEvents(appliedFilters)}
+            disabled={loading || refreshing}
+            aria-disabled={loading || refreshing}
+            aria-busy={refreshing}
+            data-testid="events-refresh-now"
+          >
+            {refreshing ? '正在刷新...' : '立即刷新'}
+          </button>
+        </div>
+      </section>
 
       {loading ? (
         <StatePanelCard

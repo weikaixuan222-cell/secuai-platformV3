@@ -180,6 +180,83 @@
   font-size: 0.82rem;
 }
 
+.refreshPanel {
+  align-items: center;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  padding: 18px 22px;
+}
+
+.refreshCopy {
+  min-width: 0;
+}
+
+.refreshHeadingRow {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.refreshDot {
+  border-radius: 999px;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.refreshDotActive {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.12);
+}
+
+.refreshDotPaused {
+  background: var(--text-muted);
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+}
+
+.refreshTitle {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.refreshStatus {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  margin-top: 6px;
+}
+
+.refreshHint,
+.refreshError {
+  font-size: 0.78rem;
+  line-height: 1.6;
+  margin-top: 4px;
+}
+
+.refreshHint {
+  color: var(--text-muted);
+}
+
+.refreshError {
+  color: var(--severity-high);
+}
+
+.refreshActions {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.refreshTime {
+  color: var(--text-muted);
+  font-family: 'Fira Code', monospace;
+  font-size: 0.74rem;
+}
+
 .actionGroup {
   display: flex;
   gap: 10px;
@@ -314,6 +391,7 @@
 @media (max-width: 768px) {
   .header,
   .filterActions,
+  .refreshPanel,
   .siteContextHeader {
     flex-direction: column;
     align-items: flex-start;
@@ -324,6 +402,11 @@
   }
 
   .actionGroup {
+    width: 100%;
+  }
+
+  .refreshActions {
+    align-items: stretch;
     width: 100%;
   }
 
